@@ -214,7 +214,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
          ].join("\n")
        })
      });
-     await addEvent(id, "agent.pull_request_created", { number: pullRequest.number, url: pullRequest.html_url, branch, base }, "agent");
+     await addEvent(id, "agent.pull_request_created", { number: pullRequest?.number, url: pullRequest?.html_url, branch, base }, "agent");
    } catch (prError) {
      const message = prError instanceof Error ? prError.message : String(prError);
      await addEvent(id, "agent.pull_request_failed", { error: message, branch, compareUrl }, "agent");
