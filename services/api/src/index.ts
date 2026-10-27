@@ -44,15 +44,17 @@ app.post("/api/v1/sessions/:id/commands", async (req, res) => {
    instructions.set(s.id, [...(instructions.get(s.id) || []), text]);
    addEvent(s.id, type, { text }, "user");
  } else if (type === "agent.start" || type === "agent.resume") {
-   const credentials = req.body?.credentials && typeof req.body.credentials === "object" ? req.body.credentials : {};\n   const openaiKey = typeof credentials.openaiApiKey === "string" ? credentials.openaiApiKey.trim() : process.env.OPENAI_API_KEY || "";
+   const credentials = req.body?.credentials && typeof req.body.credentials === "object" ? req.body.credentials : {};
+   const openaiKey = typeof credentials.openaiApiKey === "string" ? credentials.openaiApiKey.trim() : process.env.OPENAI_API_KEY || "";
    const githubToken = typeof credentials.githubToken === "string" ? credentials.githubToken.trim() : process.env.GITHUB_TOKEN || "";
-   if (!openaiKey || !githubToken) return res.status(400).json({ error: "Enter your OpenAI API key and GitHub token before starting the agent. Keys are used for this run and are not saved in session records." });
+   if (!openaiKey || !githubToken) return res.status(400).json({ error: "Enter the selected AI provider API key and your GitHub token before starting. Credentials are used for this run and are not saved in session records." });
+   if (!["openai","anthropic","gemini","openrouter"].includes(provider)) return res.status(400).json({ error: "Unsupported AI provider." });
    if (!s.repository) return res.status(400).json({ error: "Add a GitHub repository (owner/repo) when creating the session first." });
    if (!(instructions.get(s.id) || []).length) return res.status(400).json({ error: "Add an instruction before starting the agent." });
    if (s.status === "running") return res.status(409).json({ error: "Agent is already running." });
    cancelled.delete(s.id); paused.delete(s.id); s.status = "running";
    addEvent(s.id, type, { status: "running" }, "user");
-   void runAgent(s, { openaiKey, githubToken });
+   void runAgent(s, { provider, providerKey: openaiKey, model, githubToken });
  } else if (type === "agent.pause") {
    paused.add(s.id); s.status = "paused"; addEvent(s.id, type, { status: s.status }, "user");
  } else if (type === "agent.cancel") {
@@ -66,7 +68,8 @@ function addEvent(sessionId: string, type: string, payload: Record<string, unkno
  const event: Event = { type, sessionId, seq: list.length + 1, timestamp: new Date().toISOString(), actor: { type: actor, id: actor === "user" ? "local-user" : actor }, payload };
  list.push(event); events.set(sessionId, list); io.to(sessionId).emit("session.event", event); return event;
 }
-type AgentCredentials = { openaiKey: string; githubToken: string };\nasync function github(path: string, token: string, init: RequestInit = {}) {
+type AgentCredentials = { openaiKey: string; githubToken: string };
+async function github(path: string, token: string, init: RequestInit = {}) {
  const response = await fetch("https://api.github.com" + path, { ...init, headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json", ...(init.headers || {}) } });
  const data = await response.json().catch(() => ({}));
  if (!response.ok) throw new Error("GitHub API " + response.status + ": " + String((data as any).message || "request failed"));
@@ -95,10 +98,26 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    const task = (instructions.get(id) || []).join("\n\n");
    const prompt = "You are a careful coding agent. Review the supplied repository files and implement the user's task. Return ONLY JSON matching {summary:string, edits:[{path:string,content:string}], notes:string[]}. Each edit must contain the COMPLETE replacement file content. Only edit existing files included in the input; never edit secrets, CI deployment config, package lockfiles, or files outside the task scope. If the task cannot be safely completed from the provided files, return edits:[] and explain in summary/notes. Keep edits focused.\nTASK:\n" + task + "\nFILES:\n" + JSON.stringify(contents.map(f => ({path:f.path,content:f.content})));
    addEvent(id, "agent.analyzing", { fileCount: contents.length, message: "Sending repository context to the model." }, "agent");
-   const modelResponse = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", headers: { Authorization: "Bearer " + credentials.openaiKey, "Content-Type": "application/json" }, body: JSON.stringify({ model: process.env.OPENAI_MODEL || "gpt-4.1-mini", temperature: 0.1, response_format: { type: "json_object" }, messages: [{ role: "system", content: "You produce safe, minimal code edits as JSON." }, { role: "user", content: prompt }] }) });
-   const result = await modelResponse.json().catch(() => ({})) as any;
-   if (!modelResponse.ok) throw new Error("Model API " + modelResponse.status + ": " + (result.error?.message || "request failed"));
-   const output = JSON.parse(result.choices?.[0]?.message?.content || "{}");
+   const model = credentials.model || ({ openai: "gpt-4.1-mini", anthropic: "claude-sonnet-4-20250514", gemini: "gemini-2.5-flash", openrouter: "openai/gpt-4.1-mini" } as Record<string,string>)[credentials.provider];
+   let outputText = "";
+   if (credentials.provider === "anthropic") {
+     const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": credentials.providerKey, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: 8192, system: "You produce safe, minimal code edits as JSON. Return valid JSON only.", messages: [{ role: "user", content: prompt }] }) });
+     const data = await response.json().catch(() => ({})) as any;
+     if (!response.ok) throw new Error("Anthropic API " + response.status + ": " + (data.error?.message || "request failed"));
+     outputText = (data.content || []).filter((x:any)=>x.type==="text").map((x:any)=>x.text).join("\n");
+   } else if (credentials.provider === "gemini") {
+     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(credentials.providerKey), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "You produce safe, minimal code edits as JSON. Return valid JSON only." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json" } }) });
+     const data = await response.json().catch(() => ({})) as any;
+     if (!response.ok) throw new Error("Gemini API " + response.status + ": " + (data.error?.message || "request failed"));
+     outputText = data.candidates?.[0]?.content?.parts?.map((x:any)=>x.text || "").join("\n") || "{}";
+   } else {
+     const endpoint = credentials.provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
+     const response = await fetch(endpoint, { method: "POST", headers: { Authorization: "Bearer " + credentials.providerKey, "Content-Type": "application/json", ...(credentials.provider === "openrouter" ? { "HTTP-Referer": process.env.PUBLIC_APP_URL || "https://multiplayer-agent-app.onrender.com", "X-Title": "Multiplayer Agent" } : {}) }, body: JSON.stringify({ model, temperature: 0.1, response_format: { type: "json_object" }, messages: [{ role: "system", content: "You produce safe, minimal code edits as JSON." }, { role: "user", content: prompt }] }) });
+     const data = await response.json().catch(() => ({})) as any;
+     if (!response.ok) throw new Error((credentials.provider === "openrouter" ? "OpenRouter" : "OpenAI") + " API " + response.status + ": " + (data.error?.message || "request failed"));
+     outputText = data.choices?.[0]?.message?.content || "{}";
+   }
+   const output = JSON.parse(outputText.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""));
    if (cancelled.has(id)) throw new Error("Task cancelled.");
    const edits = Array.isArray(output.edits) ? output.edits.filter((e: any) => contents.some(f => f.path === e.path) && typeof e.content === "string") : [];
    if (!edits.length) { addEvent(id, "agent.completed", { summary: output.summary || "No safe file edits were proposed.", notes: output.notes || [] }, "agent"); session.status = "completed"; return; }
