@@ -27,7 +27,7 @@ Frontend (Vite):
 
 API (Render environment):
 - `SUPABASE_URL`: project URL
-- `SUPABASE_SECRET_KEY`: server-only Supabase secret key. If your project only provides legacy keys, use the service_role key only as a server-side secret.
+- `SUPABASE_PUBLISHABLE_KEY`: Supabase publishable key and authenticated user JWT. If your project only provides legacy keys, use the service_role key only as a server-side secret.
 
 Never put a secret/service-role key in any `VITE_*` variable, source code, repository, issue, or logs. Never paste secrets into chat.
 
