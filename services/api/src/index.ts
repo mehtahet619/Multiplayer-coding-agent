@@ -10,7 +10,7 @@ const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.e
 if (!supabaseUrl || !supabasePublishableKey) throw new Error("SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY must be configured.");
 const supabase = createClient(supabaseUrl, supabasePublishableKey, { auth: { persistSession: false, autoRefreshToken: false } });
 const sessionDbClients = new Map<string, any>();
-function dbForToken(token: string): any { return createClient(supabaseUrl!, supabasePublishableKey!, { global: { headers: { Authorization: "Bearer " + token } }, auth: { persistSession: false, autoRefreshToken: false } }); }
+function dbForToken(token: string): any { return createClient(supabaseUrl!, supabasePublishableKey!, { accessToken: async () => token, auth: { persistSession: false, autoRefreshToken: false } }); }
 function dbForSession(sessionId: string): any { const client = sessionDbClients.get(sessionId); if (!client) throw new Error("Authenticated database context missing for session."); return client; }
 const app = express();
 const server = createServer(app);
