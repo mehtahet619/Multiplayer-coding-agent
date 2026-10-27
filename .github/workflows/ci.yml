@@ -12,5 +12,4 @@ jobs:
         with:
           node-version: 20
       - run: pnpm install --no-frozen-lockfile
-      - run: pnpm --filter @mca/api exec prisma generate
       - run: pnpm --recursive build
