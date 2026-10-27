@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 type Session = { id: string; title: string; status: string; createdAt: string; repository?: string; branch?: string };
 type EventItem = { type: string; timestamp: string; actor: { type: string }; payload: Record<string, unknown> };
-const API = (import.meta.env.VITE_API_URL || "http://localhost:4000").replace(/\/$/, "");
+const API = (import.meta.env.VITE_API_URL || "https://multiplayer-coding-agent-api.onrender.com").replace(/\/$/, "");
 const SOCKET = (import.meta.env.VITE_SOCKET_URL || API).replace(/\/$/, "");
 export default function App() {
- const [sessions,setSessions]=useState<Session[]>([]);
+ const socketRef = useRef<Socket | null>(null);\n const selectedRef = useRef<string>("");\n const [sessions,setSessions]=useState<Session[]>([]);
  const [selected,setSelected]=useState<string>("");
  const [events,setEvents]=useState<EventItem[]>([]);
  const [title,setTitle]=useState("My shared coding session");
@@ -17,8 +17,8 @@ export default function App() {
  const [instruction,setInstruction]=useState("");
  const [connection,setConnection]=useState("connecting");
  const [error,setError]=useState("");
- useEffect(()=>{let alive=true;fetch(API+"/api/v1/sessions").then(r=>r.ok?r.json():Promise.reject(new Error("API returned "+r.status))).then((data:Session[])=>{if(alive){setSessions(data);if(data[0])setSelected(data[0].id)}}).catch(e=>alive&&setError(String(e)));const socket:Socket=io(SOCKET,{transports:["websocket","polling"]});socket.on("connect",()=>setConnection("connected"));socket.on("disconnect",()=>setConnection("disconnected"));socket.on("connect_error",()=>setConnection("offline"));socket.on("session.event",(event:EventItem & {sessionId:string})=>{if(event.sessionId===selected)setEvents(prev=>[...prev,event])});return()=>{alive=false;socket.disconnect()}},[]);
- useEffect(()=>{if(!selected)return;fetch(API+"/api/v1/sessions/"+selected+"/events").then(r=>r.ok?r.json():[]).then(setEvents).catch(()=>setEvents([]));},[selected]);
+ useEffect(()=>{let alive=true;fetch(API+"/api/v1/sessions").then(r=>r.ok?r.json():Promise.reject(new Error("API returned "+r.status))).then((data:Session[])=>{if(alive){setSessions(data);if(data[0])setSelected(data[0].id)}}).catch(e=>alive&&setError(String(e)));const socket:Socket=io(SOCKET,{transports:["websocket","polling"]});socketRef.current=socket;socket.on("connect",()=>{setConnection("connected");if(selectedRef.current)socket.emit("session.join",{sessionId:selectedRef.current})});socket.on("disconnect",()=>setConnection("disconnected"));socket.on("connect_error",()=>setConnection("offline"));socket.on("session.event",(event:EventItem & {sessionId:string})=>{if(event.sessionId===selectedRef.current)setEvents(prev=>[...prev,event])});return()=>{alive=false;socket.disconnect();socketRef.current=null}},[]);
+ useEffect(()=>{selectedRef.current=selected;if(!selected)return;socketRef.current?.emit("session.join",{sessionId:selected});fetch(API+"/api/v1/sessions/"+selected+"/events").then(r=>r.ok?r.json():[]).then(setEvents).catch(()=>setEvents([]));},[selected]);
  async function createSession(){setError("");try{const r=await fetch(API+"/api/v1/sessions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title,repository:repository.trim()})});if(!r.ok)throw new Error("Could not create session ("+r.status+")");const s:Session=await r.json();setSessions(prev=>[s,...prev]);setSelected(s.id);setEvents([])}catch(e){setError(String(e))}}
  async function command(type:string,payload:Record<string,unknown>={}){if(!selected)return;setError("");try{const r=await fetch(API+"/api/v1/sessions/"+selected+"/commands",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type,payload,...((type==="agent.start"||type==="agent.resume")?{credentials:{provider,providerKey,model,githubToken}}:{})})});if(!r.ok)throw new Error("Command failed ("+r.status+")");const data=await r.json();setSessions(prev=>prev.map(s=>s.id===selected?data.session:s));const refreshed=await fetch(API+"/api/v1/sessions/"+selected+"/events");if(refreshed.ok)setEvents(await refreshed.json())}catch(e){setError(String(e))}}
  const active=sessions.find(s=>s.id===selected);
