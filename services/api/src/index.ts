@@ -79,7 +79,7 @@ async function runAgent(session: Session) {
    const repoInfo = await github("/repos/" + owner + "/" + name);
    const base = repoInfo.default_branch || "main";
    const tree = await github("/repos/" + owner + "/" + name + "/git/trees/" + encodeURIComponent(base) + "?recursive=1");
-   const files = (tree.tree || []).filter((x: any) => x.type === "blob" && /\.(ts|tsx|js|jsx|json|md|css|html|py|go|rs|yml|yaml)$/.test(x.path) && !/(node_modules|dist|build|\.lock$|\.min\.)/.test(x.path)).slice(0, 35);
+   const files = (tree.tree || []).filter((x: any) => x.type === "blob" && /\.(ts|tsx|js|jsx|json|md|css|html|py|go|rs|yml|yaml)$/.test(x.path) && !/(node_modules|dist|build|\.lock$|\.min\.)/.test(x.path)).slice(0, 12);
    const contents: Array<{path:string;sha:string;content:string}> = [];
    for (const file of files) {
      if (cancelled.has(id)) throw new Error("Task cancelled.");
@@ -87,7 +87,7 @@ async function runAgent(session: Session) {
      const blob = await github("/repos/" + owner + "/" + name + "/contents/" + file.path.split("/").map(encodeURIComponent).join("/") + "?ref=" + encodeURIComponent(base));
      if (blob.encoding === "base64" && typeof blob.content === "string") {
        const decoded = Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
-       if (decoded.length < 45000) contents.push({ path: file.path, sha: blob.sha, content: decoded });
+       if (decoded.length < 12000) contents.push({ path: file.path, sha: blob.sha, content: decoded });
      }
    }
    const task = (instructions.get(id) || []).join("\n\n");
