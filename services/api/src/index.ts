@@ -48,7 +48,7 @@ app.post("/api/v1/sessions/:id/commands", async (req, res) => {
    const provider = typeof credentials.provider === "string" ? credentials.provider : "openai";
    const providerKey = typeof credentials.providerKey === "string" ? credentials.providerKey.trim() : "";
    const model = typeof credentials.model === "string" ? credentials.model.trim() : "";
-   const openaiKey = providerKey || (provider === "openai" ? process.env.OPENAI_API_KEY || "" : "");
+   const openaiKey = providerKey;
    const githubToken = typeof credentials.githubToken === "string" ? credentials.githubToken.trim() : process.env.GITHUB_TOKEN || "";
    if (!openaiKey || !githubToken) return res.status(400).json({ error: "Enter the selected AI provider API key and your GitHub token before starting. Credentials are used for this run and are not saved in session records." });
    if (!["openai","anthropic","gemini","openrouter"].includes(provider)) return res.status(400).json({ error: "Unsupported AI provider." });
