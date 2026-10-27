@@ -12,7 +12,8 @@
     "@mca/contracts": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "socket.io-client": "^4.8.1"
+    "socket.io-client": "^4.8.1",
+    "@supabase/supabase-js": "^2.57.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
