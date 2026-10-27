@@ -5,7 +5,9 @@ type EventItem = { type: string; timestamp: string; actor: { type: string }; pay
 const API = (import.meta.env.VITE_API_URL || "https://multiplayer-coding-agent-api.onrender.com").replace(/\/$/, "");
 const SOCKET = (import.meta.env.VITE_SOCKET_URL || API).replace(/\/$/, "");
 export default function App() {
- const socketRef = useRef<Socket | null>(null);\n const selectedRef = useRef<string>("");\n const [sessions,setSessions]=useState<Session[]>([]);
+ const socketRef = useRef<Socket | null>(null);
+ const selectedRef = useRef<string>("");
+ const [sessions,setSessions]=useState<Session[]>([]);
  const [selected,setSelected]=useState<string>("");
  const [events,setEvents]=useState<EventItem[]>([]);
  const [title,setTitle]=useState("My shared coding session");
