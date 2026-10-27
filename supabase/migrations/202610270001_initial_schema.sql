@@ -87,5 +87,6 @@ drop policy if exists "Users can read events for their sessions" on public.sessi
 create policy "Users can read events for their sessions" on public.session_events for select to authenticated
 using (owner_id = (select auth.uid()) and exists (select 1 from public.sessions s where s.id = session_id and s.owner_id = (select auth.uid())));
 
--- Event writes are performed by the trusted API using its server-only Supabase secret key.
--- Never expose a Supabase secret/service-role key to the browser.
+drop policy if exists "Users can append events to their own sessions" on public.session_events;
+create policy "Users can append events to their own sessions" on public.session_events for insert to authenticated
+with check (owner_id = (select auth.uid()) and exists (select 1 from public.sessions s where s.id = session_id and s.owner_id = (select auth.uid())));
