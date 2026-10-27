@@ -9,9 +9,9 @@ const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 if (!supabaseUrl || !supabasePublishableKey) throw new Error("SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY must be configured.");
 const supabase = createClient(supabaseUrl, supabasePublishableKey, { auth: { persistSession: false, autoRefreshToken: false } });
-const sessionDbClients = new Map<string, ReturnType<typeof createClient>>();
-function dbForToken(token: string) { return createClient(supabaseUrl!, supabasePublishableKey!, { global: { headers: { Authorization: "Bearer " + token } }, auth: { persistSession: false, autoRefreshToken: false } }); }
-function dbForSession(sessionId: string) { const client = sessionDbClients.get(sessionId); if (!client) throw new Error("Authenticated database context missing for session."); return client; }
+const sessionDbClients = new Map<string, any>();
+function dbForToken(token: string): any { return createClient(supabaseUrl!, supabasePublishableKey!, { global: { headers: { Authorization: "Bearer " + token } }, auth: { persistSession: false, autoRefreshToken: false } }); }
+function dbForSession(sessionId: string): any { const client = sessionDbClients.get(sessionId); if (!client) throw new Error("Authenticated database context missing for session."); return client; }
 const app = express();
 const server = createServer(app);
 const allowed = (process.env.WEB_ORIGIN || "http://localhost:5173").split(",").map(x => x.trim());
