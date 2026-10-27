@@ -45,7 +45,10 @@ app.post("/api/v1/sessions/:id/commands", async (req, res) => {
    addEvent(s.id, type, { text }, "user");
  } else if (type === "agent.start" || type === "agent.resume") {
    const credentials = req.body?.credentials && typeof req.body.credentials === "object" ? req.body.credentials : {};
-   const openaiKey = typeof credentials.openaiApiKey === "string" ? credentials.openaiApiKey.trim() : process.env.OPENAI_API_KEY || "";
+   const provider = typeof credentials.provider === "string" ? credentials.provider : "openai";
+   const providerKey = typeof credentials.providerKey === "string" ? credentials.providerKey.trim() : "";
+   const model = typeof credentials.model === "string" ? credentials.model.trim() : "";
+   const openaiKey = providerKey || (provider === "openai" ? process.env.OPENAI_API_KEY || "" : "");
    const githubToken = typeof credentials.githubToken === "string" ? credentials.githubToken.trim() : process.env.GITHUB_TOKEN || "";
    if (!openaiKey || !githubToken) return res.status(400).json({ error: "Enter the selected AI provider API key and your GitHub token before starting. Credentials are used for this run and are not saved in session records." });
    if (!["openai","anthropic","gemini","openrouter"].includes(provider)) return res.status(400).json({ error: "Unsupported AI provider." });
@@ -68,7 +71,7 @@ function addEvent(sessionId: string, type: string, payload: Record<string, unkno
  const event: Event = { type, sessionId, seq: list.length + 1, timestamp: new Date().toISOString(), actor: { type: actor, id: actor === "user" ? "local-user" : actor }, payload };
  list.push(event); events.set(sessionId, list); io.to(sessionId).emit("session.event", event); return event;
 }
-type AgentCredentials = { openaiKey: string; githubToken: string };
+type AgentCredentials = { provider: string; providerKey: string; model: string; githubToken: string };
 async function github(path: string, token: string, init: RequestInit = {}) {
  const response = await fetch("https://api.github.com" + path, { ...init, headers: { Authorization: "Bearer " + token, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json", ...(init.headers || {}) } });
  const data = await response.json().catch(() => ({}));
