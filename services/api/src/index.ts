@@ -6,9 +6,12 @@ import { randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-const supabaseSecret = process.env.SUPABASE_SECRET_KEY;
-if (!supabaseUrl || !supabaseSecret) throw new Error("SUPABASE_URL and server-only SUPABASE_SECRET_KEY must be configured.");
-const supabase = createClient(supabaseUrl, supabaseSecret, { auth: { persistSession: false, autoRefreshToken: false } });
+const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+if (!supabaseUrl || !supabasePublishableKey) throw new Error("SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY must be configured.");
+const supabase = createClient(supabaseUrl, supabasePublishableKey, { auth: { persistSession: false, autoRefreshToken: false } });
+const sessionDbClients = new Map<string, ReturnType<typeof createClient>>();
+function dbForToken(token: string) { return createClient(supabaseUrl!, supabasePublishableKey!, { global: { headers: { Authorization: "Bearer " + token } }, auth: { persistSession: false, autoRefreshToken: false } }); }
+function dbForSession(sessionId: string) { const client = sessionDbClients.get(sessionId); if (!client) throw new Error("Authenticated database context missing for session."); return client; }
 const app = express();
 const server = createServer(app);
 const allowed = (process.env.WEB_ORIGIN || "http://localhost:5173").split(",").map(x => x.trim());
@@ -30,50 +33,55 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
  if (!token) return res.status(401).json({ error: "Sign in required." });
  const { data, error } = await supabase.auth.getUser(token);
  if (error || !data.user) return res.status(401).json({ error: "Invalid or expired sign-in. Please sign in again." });
- (req as any).user = data.user; next();
+ (req as any).user = data.user; (req as any).accessToken = token; next();
 }
 app.use("/api/v1", requireAuth);
 function mapSession(row: any): Session { return { id: row.id, ownerId: row.owner_id, title: row.title, status: row.status, createdAt: row.created_at, ...(row.repository ? { repository: row.repository } : {}), ...(row.branch ? { branch: row.branch } : {}) }; }
-async function ownedSession(id: string, ownerId: string): Promise<Session | null> {
- const { data, error } = await supabase.from("sessions").select("*").eq("id", id).eq("owner_id", ownerId).maybeSingle();
+async function ownedSession(id: string, ownerId: string, token: string): Promise<Session | null> {
+ const { data, error } = await dbForToken(token).from("sessions").select("*").eq("id", id).eq("owner_id", ownerId).maybeSingle();
  if (error) throw error; return data ? mapSession(data) : null;
 }
 app.get("/api/v1/sessions", async (req, res) => {
- const { data, error } = await supabase.from("sessions").select("*").eq("owner_id", (req as any).user.id).order("created_at", { ascending: false });
+ const db = dbForToken((req as any).accessToken);
+ const { data, error } = await db.from("sessions").select("*").eq("owner_id", (req as any).user.id).order("created_at", { ascending: false });
  if (error) return res.status(500).json({ error: "Could not load sessions." });
  res.json((data || []).map(mapSession));
 });
 app.post("/api/v1/sessions", async (req, res) => {
  const ownerId = (req as any).user.id as string;
+ const db = dbForToken((req as any).accessToken);
  const repository = typeof req.body?.repository === "string" ? req.body.repository.trim() : "";
  if (repository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
  const title = String(req.body?.title || "Shared coding session").trim().slice(0,120) || "Shared coding session";
- const { data, error } = await supabase.from("sessions").insert({ owner_id: ownerId, title, repository: repository || null, status: "idle" }).select("*").single();
+ const { data, error } = await db.from("sessions").insert({ owner_id: ownerId, title, repository: repository || null, status: "idle" }).select("*").single();
  if (error || !data) return res.status(500).json({ error: "Could not create session in database." });
- const session = mapSession(data); sessions.unshift(session); events.set(session.id, []); instructions.set(session.id, []);
+ const session = mapSession(data); sessionDbClients.set(session.id, db); sessions.unshift(session); events.set(session.id, []); instructions.set(session.id, []);
  await addEvent(session.id, "session.created", { title: session.title, repository: repository || null }, "system");
  res.status(201).json(session);
 });
 app.get("/api/v1/sessions/:id/events", async (req, res) => {
  const ownerId = (req as any).user.id as string;
- const session = await ownedSession(req.params.id, ownerId).catch(() => null);
+ const db = dbForToken((req as any).accessToken);
+ const session = await ownedSession(req.params.id, ownerId, (req as any).accessToken).catch(() => null);
  if (!session) return res.status(404).json({ error: "Session not found" });
- const { data, error } = await supabase.from("session_events").select("*").eq("session_id", session.id).eq("owner_id", ownerId).order("seq", { ascending: true });
+ const { data, error } = await db.from("session_events").select("*").eq("session_id", session.id).eq("owner_id", ownerId).order("seq", { ascending: true });
  if (error) return res.status(500).json({ error: "Could not load session activity." });
  res.json((data || []).map((row: any) => ({ type: row.type, sessionId: row.session_id, seq: row.seq, timestamp: row.created_at, actor: { type: row.actor_type, id: row.actor_id }, payload: row.payload })));
 });
 app.post("/api/v1/sessions/:id/commands", async (req, res) => {
  const ownerId = (req as any).user.id as string;
- const s = await ownedSession(req.params.id, ownerId).catch(() => null);
+ const token = (req as any).accessToken as string;
+ const db = dbForToken(token);
+ const s = await ownedSession(req.params.id, ownerId, token).catch(() => null);
  if (!s) return res.status(404).json({ error: "Session not found" });
- const cached = sessions.find(x => x.id === s.id); if (cached) Object.assign(cached, s); else sessions.unshift(s);
+ const cached = sessions.find(x => x.id === s.id); if (cached) Object.assign(cached, s); else sessions.unshift(s); sessionDbClients.set(s.id, db);
  const type = String(req.body?.type || "");
  const payload = req.body?.payload && typeof req.body.payload === "object" ? req.body.payload : {};
  if (type === "instruction.add") {
    const text = typeof payload.text === "string" ? payload.text.trim() : "";
    if (!text) return res.status(400).json({ error: "Instruction cannot be empty." });
    if (text.length > 8000) return res.status(400).json({ error: "Instruction is too long (maximum 8000 characters)." });
-   const saved = await supabase.from("session_instructions").insert({ session_id: s.id, owner_id: ownerId, body: text });
+   const saved = await db.from("session_instructions").insert({ session_id: s.id, owner_id: ownerId, body: text });
    if (saved.error) return res.status(500).json({ error: "Could not save instruction." });
    instructions.set(s.id, [...(instructions.get(s.id) || []), text]);
    await addEvent(s.id, type, { text }, "user");
@@ -93,25 +101,25 @@ app.post("/api/v1/sessions/:id/commands", async (req, res) => {
    if (!(instructions.get(s.id) || []).length) return res.status(400).json({ error: "Add an instruction before starting the agent." });
    if (s.status === "running") return res.status(409).json({ error: "Agent is already running." });
    cancelled.delete(s.id); paused.delete(s.id); s.status = "running";
-   await supabase.from("sessions").update({ status: "running", updated_at: new Date().toISOString() }).eq("id", s.id).eq("owner_id", ownerId);
+   await db.from("sessions").update({ status: "running", updated_at: new Date().toISOString() }).eq("id", s.id).eq("owner_id", ownerId);
    await addEvent(s.id, type, { status: "running" }, "user");
    void runAgent(s, { provider, providerKey: openaiKey, model, githubToken });
  } else if (type === "agent.pause") {
-   paused.add(s.id); s.status = "paused"; await supabase.from("sessions").update({ status: s.status, updated_at: new Date().toISOString() }).eq("id", s.id).eq("owner_id", ownerId); await addEvent(s.id, type, { status: s.status }, "user");
+   paused.add(s.id); s.status = "paused"; await db.from("sessions").update({ status: s.status, updated_at: new Date().toISOString() }).eq("id", s.id).eq("owner_id", ownerId); await addEvent(s.id, type, { status: s.status }, "user");
  } else if (type === "agent.cancel") {
    cancelled.add(s.id); paused.delete(s.id); s.status = "cancelled"; await supabase.from("sessions").update({ status: s.status, updated_at: new Date().toISOString() }).eq("id", s.id).eq("owner_id", ownerId); await addEvent(s.id, type, { status: s.status }, "user");
  } else return res.status(400).json({ error: "Unknown command type" });
- const update = await supabase.from("sessions").update({ status: s.status, branch: s.branch || null, updated_at: new Date().toISOString() }).eq("id", s.id).eq("owner_id", ownerId);
+ const update = await db.from("sessions").update({ status: s.status, branch: s.branch || null, updated_at: new Date().toISOString() }).eq("id", s.id).eq("owner_id", ownerId);
  if (update.error) return res.status(500).json({ error: "Could not persist session state." });
  res.json({ ok: true, session: s });
 });
 
 async function addEvent(sessionId: string, type: string, payload: Record<string, unknown>, actor: "user" | "agent" | "system") {
  const session = sessions.find(x => x.id === sessionId); if (!session) return null;
- const { data: latest } = await supabase.from("session_events").select("seq").eq("session_id", sessionId).order("seq", { ascending: false }).limit(1).maybeSingle();
+ const { data: latest } = await dbForSession(sessionId).from("session_events").select("seq").eq("session_id", sessionId).order("seq", { ascending: false }).limit(1).maybeSingle();
  const seq = Number(latest?.seq || 0) + 1, timestamp = new Date().toISOString();
  const event: Event = { type, sessionId, seq, timestamp, actor: { type: actor, id: actor === "user" ? session.ownerId : actor }, payload };
- const { error } = await supabase.from("session_events").insert({ session_id: sessionId, owner_id: session.ownerId, seq, type, actor_type: actor, actor_id: event.actor.id, payload, created_at: timestamp });
+ const { error } = await dbForSession(sessionId).from("session_events").insert({ session_id: sessionId, owner_id: session.ownerId, seq, type, actor_type: actor, actor_id: event.actor.id, payload, created_at: timestamp });
  if (error) { console.error("Could not persist session event:", error.message); return null; }
  const list = events.get(sessionId) || []; list.push(event); events.set(sessionId, list); io.to(sessionId).emit("session.event", event); return event;
 }
@@ -167,7 +175,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    const output = JSON.parse(outputText.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""));
    if (cancelled.has(id)) throw new Error("Task cancelled.");
    const edits = Array.isArray(output.edits) ? output.edits.filter((e: any) => contents.some(f => f.path === e.path) && typeof e.content === "string") : [];
-   if (!edits.length) { await addEvent(id, "agent.completed", { summary: output.summary || "No safe file edits were proposed.", notes: output.notes || [] }, "agent"); session.status = "completed"; await supabase.from("sessions").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", id).eq("owner_id", session.ownerId); return; }
+   if (!edits.length) { await addEvent(id, "agent.completed", { summary: output.summary || "No safe file edits were proposed.", notes: output.notes || [] }, "agent"); session.status = "completed"; await dbForSession(id).from("sessions").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", id).eq("owner_id", session.ownerId); return; }
    const branch = "agent/" + id.slice(0, 8);
    await github("/repos/" + owner + "/" + name + "/git/refs/heads/" + encodeURIComponent(base), credentials.githubToken).catch(async () => null);
    const baseRef = await github("/repos/" + owner + "/" + name + "/git/ref/heads/" + encodeURIComponent(base), credentials.githubToken);
@@ -183,11 +191,11 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    }
    addEvent(id, "agent.completed", { summary: output.summary || "Changes committed to a separate branch.", branch, compareUrl: "https://github.com/" + repo + "/compare/" + base + "..." + branch, notes: output.notes || [], warning: "Review the branch and run tests before merging. The agent has not run your project's test suite." }, "agent");
    session.status = "completed";
-   await supabase.from("sessions").update({ status: "completed", branch, updated_at: new Date().toISOString() }).eq("id", id).eq("owner_id", session.ownerId);
+   await dbForSession(id).from("sessions").update({ status: "completed", branch, updated_at: new Date().toISOString() }).eq("id", id).eq("owner_id", session.ownerId);
  } catch (error) {
    session.status = cancelled.has(id) ? "cancelled" : "failed";
    await addEvent(id, "agent.failed", { error: error instanceof Error ? error.message : String(error) }, "agent");
-   await supabase.from("sessions").update({ status: session.status, updated_at: new Date().toISOString() }).eq("id", id).eq("owner_id", session.ownerId);
+   await dbForSession(id).from("sessions").update({ status: session.status, updated_at: new Date().toISOString() }).eq("id", id).eq("owner_id", session.ownerId);
  }
 }
 function waitWhilePaused(id: string): Promise<void> {
@@ -201,11 +209,11 @@ io.use(async (socket, next) => {
  if (!token) return next(new Error("Unauthorized"));
  const { data, error } = await supabase.auth.getUser(token);
  if (error || !data.user) return next(new Error("Unauthorized"));
- (socket.data as any).userId = data.user.id; next();
+ (socket.data as any).userId = data.user.id; (socket.data as any).accessToken = token; next();
 });
 io.on("connection", socket => { socket.on("session.join", async (data: {sessionId?: string}) => {
  const sessionId = data?.sessionId; if (!sessionId) return;
- const { data: row, error } = await supabase.from("sessions").select("id").eq("id", sessionId).eq("owner_id", socket.data.userId).maybeSingle();
+ const { data: row, error } = await dbForToken(socket.data.accessToken).from("sessions").select("id").eq("id", sessionId).eq("owner_id", socket.data.userId).maybeSingle();
  if (!error && row) socket.join(sessionId);
 }); });
 const port = Number(process.env.PORT || process.env.API_PORT || 4000);
