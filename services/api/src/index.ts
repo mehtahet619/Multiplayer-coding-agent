@@ -46,7 +46,7 @@ app.get("/api/v1/sessions", async (req, res) => {
 app.post("/api/v1/sessions", async (req, res) => {
  const ownerId = (req as any).user.id as string;
  const repository = typeof req.body?.repository === "string" ? req.body.repository.trim() : "";
- if (repository && !/^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$/.test(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
+ if (repository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
  const title = String(req.body?.title || "Shared coding session").trim().slice(0,120) || "Shared coding session";
  const { data, error } = await supabase.from("sessions").insert({ owner_id: ownerId, title, repository: repository || null, status: "idle" }).select("*").single();
  if (error || !data) return res.status(500).json({ error: "Could not create session in database." });
