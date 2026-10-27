@@ -44,7 +44,9 @@ app.post("/api/v1/sessions/:id/commands", async (req, res) => {
    instructions.set(s.id, [...(instructions.get(s.id) || []), text]);
    addEvent(s.id, type, { text }, "user");
  } else if (type === "agent.start" || type === "agent.resume") {
-   const credentials = req.body?.credentials && typeof req.body.credentials === "object" ? req.body.credentials : {};\n   const openaiKey = typeof credentials.openaiApiKey === "string" ? credentials.openaiApiKey.trim() : process.env.OPENAI_API_KEY || "";\n   const githubToken = typeof credentials.githubToken === "string" ? credentials.githubToken.trim() : process.env.GITHUB_TOKEN || "";\n   if (!openaiKey || !githubToken) return res.status(400).json({ error: "Enter your OpenAI API key and GitHub token before starting the agent. Keys are used for this run and are not saved in session records." });
+   const credentials = req.body?.credentials && typeof req.body.credentials === "object" ? req.body.credentials : {};\n   const openaiKey = typeof credentials.openaiApiKey === "string" ? credentials.openaiApiKey.trim() : process.env.OPENAI_API_KEY || "";
+   const githubToken = typeof credentials.githubToken === "string" ? credentials.githubToken.trim() : process.env.GITHUB_TOKEN || "";
+   if (!openaiKey || !githubToken) return res.status(400).json({ error: "Enter your OpenAI API key and GitHub token before starting the agent. Keys are used for this run and are not saved in session records." });
    if (!s.repository) return res.status(400).json({ error: "Add a GitHub repository (owner/repo) when creating the session first." });
    if (!(instructions.get(s.id) || []).length) return res.status(400).json({ error: "Add an instruction before starting the agent." });
    if (s.status === "running") return res.status(409).json({ error: "Agent is already running." });
