@@ -27,9 +27,9 @@ Frontend (Vite):
 
 API (Render environment):
 - `SUPABASE_URL`: project URL
-- `SUPABASE_PUBLISHABLE_KEY`: Supabase publishable key and authenticated user JWT. If your project only provides legacy keys, use the service_role key only as a server-side secret.
+- `SUPABASE_PUBLISHABLE_KEY`: the same publishable key used by the frontend. The API forwards each authenticated user JWT to Supabase so row-level security applies; do not configure a service-role key for this setup.
 
 Never put a secret/service-role key in any `VITE_*` variable, source code, repository, issue, or logs. Never paste secrets into chat.
 
-## Security and current implementation status
-The schema is designed for owner-scoped data and enables RLS. It does not by itself migrate the existing in-memory API to persistent storage or enforce API authentication. Those application changes must be completed and tested before the service is treated as production-ready. Do not deploy this migration expecting it alone to enable Google login.
+## Security and rollout status
+The application branch now adds Google OAuth UI, bearer-token validation, owner checks for API routes and Socket.IO joins, and database-backed sessions, instructions, and events. Apply the migration before deploying that branch. Google sign-in also requires the Google provider credentials and redirect URLs to be configured in Supabase. Build CI must pass, and live auth/database checks must be completed before calling the rollout production-ready.
