@@ -35,10 +35,11 @@ The Compose file starts PostgreSQL only by default to keep local development str
 ## Two-agent adversarial verification gate
 - Agent 1 implements the task on a separate candidate branch; it never writes directly to the default branch.
 - Agent 2 independently reviews the actual patch, checks permissions/security, and dynamically generates 100–150 repository-specific test cases plus an executable test harness.
-- The API sends the exact candidate commit to the separately deployed isolated verification runner. The runner fetches that commit and executes the harness in a resource-limited Docker container with network disabled during test execution.
+- The API dispatches the test matrix and executable harness to GitHub Actions, which checks out the exact candidate commit and runs tests on a fresh GitHub-hosted runner. No separate Docker host, runner URL, or runner secret is required.
+- The workflow publishes a uniquely named check run containing the execution report. The API accepts only a matching report for the exact candidate SHA and run ID.
 - On test failure, the actual failure evidence is sent to Agent 1. Agent 1 may repair the patch up to two times; Agent 2 re-reviews the repaired patch and generates a fresh test suite before retesting.
-- Publication fails closed if the runner is not configured/reachable, the report is incomplete, any test fails, Agent 2 rejects, or the bounded repair loop is exhausted. A generated test plan is never treated as a passing execution report.
-- Configure `VERIFICATION_RUNNER_URL` and `VERIFICATION_RUNNER_SECRET` on the API, and deploy `services/verification-runner` on a host with Docker. See `services/verification-runner/README.md` and [Agent roles and approval](docs/AGENT_ROLES_AND_APPROVAL.md).
+- Publication fails closed if dispatch is unavailable, the report is incomplete, any test fails, Agent 2 rejects, or the bounded repair loop is exhausted. A generated test plan is never treated as a passing execution report.
+- The `Dynamic Verification Executor` workflow must exist on the target repository's default branch, and the GitHub token must be allowed to dispatch Actions workflows and read check runs. See [Agent roles and approval](docs/AGENT_ROLES_AND_APPROVAL.md).
 
 ## Security before public deployment
 - Replace development identity headers with proper authentication.
