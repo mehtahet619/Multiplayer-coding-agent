@@ -42,3 +42,5 @@
 
 /* Two-agent approval workflow */
 .agent-role-divider{display:flex;align-items:center;gap:12px;margin:22px 0 10px;color:#c4b5fd;font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.agent-role-divider:before,.agent-role-divider:after{content:"";height:1px;flex:1;background:rgba(167,139,250,.3)}
+
+.test-matrix-details{margin:10px 0;padding:10px 12px;border:1px solid rgba(167,139,250,.22);border-radius:10px;background:rgba(139,92,246,.045)}.test-matrix-details summary{cursor:pointer;color:#c4b5fd;font-size:13px;font-weight:700}.test-matrix-details ol,.test-matrix-details ul{padding-left:22px;max-height:440px;overflow:auto}.test-matrix-details li{padding:8px 0;border-bottom:1px solid rgba(148,163,184,.12);font-size:12px}.test-matrix-details li p{margin:4px 0}.test-matrix-details li small{color:#94a3b8}
