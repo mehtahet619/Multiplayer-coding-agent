@@ -221,7 +221,10 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    const review = JSON.parse(reviewText.trim());
    const testCases = Array.isArray(review.testCases) ? review.testCases : [];
    const highRisk = Array.isArray(review.findings) && review.findings.some((finding: any) => ["critical", "high"].includes(String(finding.severity || "").toLowerCase()));
-   const validDecision = review.decision === "approve" && !highRisk && testCases.length >= 100 && testCases.length <= 150;
+   const testIds = testCases.map((test: any) => typeof test?.id === "string" ? test.id.trim() : "");
+   const uniqueTestIds = testIds.every((testId: string) => testId.length > 0) && new Set(testIds).size === testCases.length;
+   const completeTestCases = testCases.every((test: any) => test && typeof test.area === "string" && typeof test.scenario === "string" && test.scenario.trim().length > 0 && typeof test.expectedResult === "string" && test.expectedResult.trim().length > 0 && ["ui", "api", "integration", "static"].includes(test.executionLayer));
+   const validDecision = review.decision === "approve" && !highRisk && testCases.length >= 100 && testCases.length <= 150 && uniqueTestIds && completeTestCases;
    await addEvent(id, "review_agent.completed", {
      decision: validDecision ? "approved" : "rejected",
      summary: String(review.summary || "Permission review completed."),
