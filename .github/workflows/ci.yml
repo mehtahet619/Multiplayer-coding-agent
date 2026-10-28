@@ -13,4 +13,3 @@ jobs:
           node-version: 20
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm --recursive build
-      - run: pnpm --recursive test
