@@ -35,8 +35,7 @@ def write_archive(repo: str, sha: str, token: str, root: Path):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("Invalid repository or commit SHA")
     owner, name = repo.split("/", 1)
-    metadata = github_json(f"https://api.github.com/repos/{owner}/{name}/tarball/{sha}", token)
-    # GitHub tarball endpoint returns bytes, not JSON; fetch it separately.
+    # Fetch the archive directly; the endpoint returns a redirect to the archive bytes.
     req = urllib.request.Request(f"https://api.github.com/repos/{owner}/{name}/tarball/{sha}", headers={
         "Authorization": "Bearer " + token, "Accept": "application/vnd.github+json",
         "User-Agent": "multiplayer-agent-verification-runner",
