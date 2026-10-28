@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { isValidRepositorySlug } from "./validation.js";
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -59,7 +60,7 @@ app.post("/api/v1/sessions", async (req, res) => {
  const ownerId = (req as any).user.id as string;
  const db = dbForToken((req as any).accessToken);
  const repository = typeof req.body?.repository === "string" ? req.body.repository.trim() : "";
- if (repository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
+ if (repository && !isValidRepositorySlug(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
  const title = String(req.body?.title || "Shared coding session").trim().slice(0,120) || "Shared coding session";
  const { data, error } = await db.from("sessions").insert({ owner_id: ownerId, title, repository: repository || null, status: "idle" }).select("*").single();
  if (error || !data) return res.status(500).json({ error: "Could not create session in database." });
