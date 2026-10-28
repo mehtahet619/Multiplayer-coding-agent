@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { isValidRepositorySlug } from "./validation.js";
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -59,7 +60,7 @@ app.post("/api/v1/sessions", async (req, res) => {
  const ownerId = (req as any).user.id as string;
  const db = dbForToken((req as any).accessToken);
  const repository = typeof req.body?.repository === "string" ? req.body.repository.trim() : "";
- if (repository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
+ if (repository && !isValidRepositorySlug(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
  const title = String(req.body?.title || "Shared coding session").trim().slice(0,120) || "Shared coding session";
  const { data, error } = await db.from("sessions").insert({ owner_id: ownerId, title, repository: repository || null, status: "idle" }).select("*").single();
  if (error || !data) return res.status(500).json({ error: "Could not create session in database." });
@@ -265,6 +266,29 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      await github("/repos/" + owner + "/" + name + "/contents/" + edit.path.split("/").map(encodeURIComponent).join("/"), credentials.githubToken, { method: "PUT", body: JSON.stringify({ message: "agent: " + String(output.summary || "implement requested changes").slice(0, 60), content: Buffer.from(edit.content, "utf8").toString("base64"), branch, sha: original.sha }) });
      await addEvent(id, "agent.file_committed", { path: edit.path, branch }, "agent");
    }
+   // Fail closed: do not create a pull request until GitHub Actions has actually run on the final candidate commit and every check succeeds.
+   await addEvent(id, "agent.ci_validation_started", { message: "Waiting for repository CI on the completed candidate branch. No pull request will be opened until checks pass." }, "agent");
+   const finalBranchRef = await github("/repos/" + owner + "/" + name + "/git/ref/heads/" + encodeURIComponent(branch), credentials.githubToken);
+   const candidateSha = String(finalBranchRef.object?.sha || "");
+   if (!candidateSha) throw new Error("Cannot verify candidate commit SHA; publication blocked.");
+   let checksPassed = false;
+   let lastCheckSummary = "No GitHub Actions checks were reported.";
+   for (let attempt = 0; attempt < 60; attempt++) {
+     if (cancelled.has(id)) throw new Error("Task cancelled while waiting for CI.");
+     await waitWhilePaused(id);
+     const checkData = await github("/repos/" + owner + "/" + name + "/commits/" + encodeURIComponent(candidateSha) + "/check-runs?per_page=100", credentials.githubToken);
+     const checks = Array.isArray(checkData.check_runs) ? checkData.check_runs : [];
+     if (checks.length) {
+       const pending = checks.filter((check: any) => check.status !== "completed");
+       const failed = checks.filter((check: any) => check.status === "completed" && check.conclusion !== "success" && check.conclusion !== "neutral" && check.conclusion !== "skipped");
+       lastCheckSummary = checks.map((check: any) => String(check.name || "unnamed") + "=" + String(check.status === "completed" ? check.conclusion : check.status)).join(", ");
+       if (failed.length) throw new Error("Candidate CI failed; no pull request created. " + lastCheckSummary);
+       if (!pending.length) { checksPassed = true; break; }
+     }
+     await new Promise(resolve => setTimeout(resolve, 10000));
+   }
+   if (!checksPassed) throw new Error("Candidate CI did not complete successfully within 10 minutes; publication blocked. " + lastCheckSummary);
+   await addEvent(id, "agent.ci_validation_passed", { candidateSha, summary: lastCheckSummary, message: "Repository CI completed successfully on the exact candidate commit." }, "agent");
    const compareUrl = "https://github.com/" + repo + "/compare/" + encodeURIComponent(base) + "..." + encodeURIComponent(branch);
    let pullRequest: { number?: number; html_url?: string } | null = null;
    try {
