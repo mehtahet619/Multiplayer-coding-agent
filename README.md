@@ -32,13 +32,6 @@ The Compose file starts PostgreSQL only by default to keep local development str
 - Model support depends on your local hardware and the selected Ollama model.
 - This is an initial scaffold; full end-to-end behavior has not been verified.
 
-## Two-agent review gate
-- Agent 1 implements the requested task using the selected coding provider/model.
-- Agent 2 uses its own configured provider/model and API key as the independent permission/security reviewer.
-- Agent 2 must approve the patch, report no critical/high findings, and return a 100–150-case tailored test matrix before a feature branch or pull request is created.
-- The current hosted runtime generates the test matrix but does not execute all UI/API cases. Passing CI and human review are still required before merge.
-- See [Agent roles and approval prompts](docs/AGENT_ROLES_AND_APPROVAL.md).
-
 ## Security before public deployment
 - Replace development identity headers with proper authentication.
 - Add workspace membership checks on every endpoint and socket command.
