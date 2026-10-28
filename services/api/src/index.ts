@@ -164,7 +164,7 @@ async function requestProviderJson(provider: string, key: string, model: string,
  }
  return JSON.parse(text.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""));
 }
-\nasync function runAgent(session: Session, credentials: AgentCredentials) {
+async function runAgent(session: Session, credentials: AgentCredentials) {
  const id = session.id;
  try {
    const repo = session.repository!;
