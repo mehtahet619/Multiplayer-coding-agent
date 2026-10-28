@@ -29,7 +29,7 @@ const paused = new Set<string>();
 app.get("/health", (_req, res) => res.json({ ok: true, service: "multiplayer-coding-agent-api" }));
 app.post("/api/v1/waitlist", async (req, res) => {
  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
- if (email.length > 254 || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) return res.status(400).json({ error: "Enter a valid email address." });
+ if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "Enter a valid email address." });
  const { error } = await supabase.from("waitlist_signups").insert({ email });
  if (error && error.code === "23505") return res.status(200).json({ ok: true, message: "You’re already on the waitlist." });
  if (error) { console.error("Waitlist signup failed:", error.message); return res.status(500).json({ error: "Waitlist is temporarily unavailable. Please try again later." }); }
