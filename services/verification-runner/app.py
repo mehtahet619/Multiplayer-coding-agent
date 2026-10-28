@@ -97,7 +97,7 @@ const fs = require('node:fs');
             ["docker", "run", "--rm", "--network", "bridge", "--memory", "2g", "--cpus", "2",
              "--pids-limit", "256", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
              "-v", f"{repo_dir}:/workspace:rw", "-w", "/workspace", IMAGE,
-             "sh", "-lc", "if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile; elif [ -f package-lock.json ]; then npm ci --ignore-scripts=false; else npm install --ignore-scripts=false; fi"],
+             "sh", "-lc", "if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile --ignore-scripts; elif [ -f package-lock.json ]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi"],
             capture_output=True, text=True, timeout=min(timeout, 600), check=False)
         if install.returncode != 0:
             return {"status": "failed", "executed": True, "summary": "Dependency installation failed in isolated container.",
