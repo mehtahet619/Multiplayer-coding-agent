@@ -149,12 +149,12 @@ async function requestProviderJson(provider: string, key: string, model: string,
    const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: 16000, system: role + ". Return valid JSON only.", messages: [{ role: "user", content: prompt }] }) });
    const data = await response.json().catch(() => ({})) as any;
    if (!response.ok) throw new Error("Anthropic repair/review request failed: " + (data.error?.message || response.status));
-   text = (data.content || []).filter((x: any) => x.type === "text").map((x: any) => x.text).join("\\n");
+   text = (data.content || []).filter((x: any) => x.type === "text").map((x: any) => x.text).join("\n");
  } else if (provider === "gemini") {
    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(key), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: role + ". Return valid JSON only." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 16000 } }) });
    const data = await response.json().catch(() => ({})) as any;
    if (!response.ok) throw new Error("Gemini repair/review request failed: " + (data.error?.message || response.status));
-   text = data.candidates?.[0]?.content?.parts?.map((x: any) => x.text || "").join("\\n") || "{}";
+   text = data.candidates?.[0]?.content?.parts?.map((x: any) => x.text || "").join("\n") || "{}";
  } else {
    const endpoint = provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
    const response = await fetch(endpoint, { method: "POST", headers: { Authorization: "Bearer " + key, "Content-Type": "application/json", ...(provider === "openrouter" ? { "HTTP-Referer": process.env.PUBLIC_APP_URL || "https://multiplayer-agent-app.onrender.com", "X-Title": "Multiplayer Agent Verification" } : {}) }, body: JSON.stringify({ model, temperature: 0, max_tokens: 16000, response_format: { type: "json_object" }, messages: [{ role: "system", content: role + ". Return valid JSON only." }, { role: "user", content: prompt }] }) });
@@ -162,7 +162,7 @@ async function requestProviderJson(provider: string, key: string, model: string,
    if (!response.ok) throw new Error("Model repair/review request failed: " + (data.error?.message || response.status));
    text = data.choices?.[0]?.message?.content || "{}";
  }
- return JSON.parse(text.replace(/^\\s*```(?:json)?\\s*/i, "").replace(/\\s*```\\s*$/, ""));
+ return JSON.parse(text.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""));
 }
 \nasync function runAgent(session: Session, credentials: AgentCredentials) {
  const id = session.id;
