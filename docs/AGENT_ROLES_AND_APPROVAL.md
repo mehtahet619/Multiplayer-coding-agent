@@ -26,7 +26,7 @@
 
 ## Dynamic execution, repair, and retest
 
-The API now requires an executable test bundle from Agent 2 in addition to the 100–150-case matrix. The bundle must export a CommonJS async function (or `runTests`) that returns one `{ id, passed, message }` result for every generated test case. The separately deployed `services/verification-runner` fetches the exact candidate commit and runs the bundle in a constrained Docker container with networking disabled during execution. It rejects missing, duplicate, malformed, or failed per-case results.
+The API now requires an executable test bundle from Agent 2 in addition to the 100–150-case matrix. The bundle must export a CommonJS async function (or `runTests`) that returns one `{ id, passed, message }` result for every generated test case. The `.github/workflows/dynamic-verification.yml` workflow checks out the exact candidate SHA on a fresh GitHub-hosted runner and executes the bundle. It rejects missing, duplicate, malformed, or failed per-case results and publishes a uniquely named check run with the full report. No Render runner URL or runner secret is needed.
 
 If tests fail, the API sends the actual failure evidence to Agent 1. Agent 1 may submit repairs up to two times. Agent 2 independently re-reviews the repaired diff and produces a fresh test matrix and executable bundle; the runner executes the fresh suite against the repaired commit. Missing runner configuration, unavailable execution, invalid reports, failed tests, reviewer rejection, or exhausted retries block pull-request creation. The runner currently supports Node.js projects; unsupported projects fail closed.
 

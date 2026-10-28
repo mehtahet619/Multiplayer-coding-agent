@@ -1,0 +1,167 @@
+name: Dynamic Verification Executor
+run-name: Agent2 dynamic verification / ${{ inputs.run_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Unique verification run identifier
+        required: true
+        type: string
+      candidate_sha:
+        description: Exact candidate commit SHA to test
+        required: true
+        type: string
+      test_cases:
+        description: JSON array of generated test cases
+        required: true
+        type: string
+      test_bundle:
+        description: CommonJS test harness source
+        required: true
+        type: string
+permissions:
+  contents: read
+  checks: write
+concurrency:
+  group: dynamic-verification-${{ inputs.run_id }}
+  cancel-in-progress: false
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Install dependencies without lifecycle scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile --ignore-scripts
+          elif [ -f package-lock.json ]; then npm ci --ignore-scripts
+          elif [ -f yarn.lock ]; then corepack enable && yarn install --immutable
+          elif [ -f package.json ]; then npm install --ignore-scripts
+          else echo "No supported Node package manifest; cannot verify." >&2; exit 1; fi
+      - name: Write generated test inputs
+        env:
+          TEST_CASES_JSON: ${{ inputs.test_cases }}
+          TEST_BUNDLE_SOURCE: ${{ inputs.test_bundle }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          fs.writeFileSync('.agent-test-cases.json', process.env.TEST_CASES_JSON, { mode: 0o600 });
+          fs.writeFileSync('.agent-generated-tests.cjs', process.env.TEST_BUNDLE_SOURCE, { mode: 0o600 });
+          JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8'));
+          NODE
+      - name: Execute generated tests
+        id: run_tests
+        continue-on-error: true
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          (async () => {
+            const cases = JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8'));
+            const mod = require(path.resolve('.agent-generated-tests.cjs'));
+            const fn = typeof mod === 'function' ? mod : mod.runTests;
+            if (typeof fn !== 'function') throw new Error('Generated harness must export a function or runTests');
+            const raw = await fn({ repositoryRoot: process.cwd(), testCases: cases });
+            if (!Array.isArray(raw)) throw new Error('Harness did not return an array');
+            const expected = new Set(cases.map(x => x.id));
+            const seen = new Set();
+            const results = [];
+            for (const item of raw) {
+              if (!item || typeof item.id !== 'string' || !expected.has(item.id) || seen.has(item.id) ||
+                  typeof item.passed !== 'boolean' || typeof item.message !== 'string') {
+                throw new Error('Harness returned malformed, duplicate, or unexpected test results');
+              }
+              seen.add(item.id);
+              results.push({ id: item.id, passed: item.passed, message: item.message.slice(0, 2000) });
+            }
+            if (seen.size !== expected.size) throw new Error('Harness omitted one or more generated test IDs');
+            const failed = results.filter(x => !x.passed);
+            const report = {
+              runId: process.env.RUN_ID,
+              candidateSha: process.env.CANDIDATE_SHA,
+              executed: true,
+              status: failed.length ? 'failed' : 'passed',
+              testCount: results.length,
+              passedCount: results.length - failed.length,
+              failedCount: failed.length,
+              failures: failed.slice(0, 15).map(x => ({ id: x.id, passed: false, message: x.message.slice(0, 1000) })),
+              summary: failed.length ? failed.length + ' generated tests failed.' : 'All ' + results.length + ' generated tests passed.'
+            };
+            fs.writeFileSync('.agent-verification-report.json', JSON.stringify(report), { mode: 0o600 });
+            console.log(JSON.stringify(report));
+            if (failed.length) process.exitCode = 1;
+          })().catch(error => {
+            const report = {
+              runId: process.env.RUN_ID,
+              candidateSha: process.env.CANDIDATE_SHA,
+              executed: false,
+              status: 'failed',
+              testCount: 0,
+              passedCount: 0,
+              failedCount: 1,
+              failures: [{ id: 'harness-execution', message: String(error && error.stack || error).slice(0, 4000) }],
+              summary: 'Generated test harness failed to execute.'
+            };
+            fs.writeFileSync('.agent-verification-report.json', JSON.stringify(report), { mode: 0o600 });
+            console.error(JSON.stringify(report));
+            process.exitCode = 1;
+          });
+          NODE
+      - name: Publish verification check
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          TEST_STEP_OUTCOME: ${{ steps.run_tests.outcome }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            let report;
+            try {
+              report = JSON.parse(fs.readFileSync('.agent-verification-report.json', 'utf8'));
+            } catch {
+              report = {
+                runId: process.env.RUN_ID,
+                candidateSha: process.env.CANDIDATE_SHA,
+                executed: false,
+                status: 'failed',
+                testCount: 0,
+                passedCount: 0,
+                failedCount: 1,
+                failures: [{id:'report-missing', message:'Test execution did not produce a valid report.'}],
+                summary:'Verification failed closed: no valid report was produced.'
+              };
+            }
+            const expectedName = 'Agent2 Dynamic Verification ' + process.env.RUN_ID;
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: expectedName,
+              head_sha: process.env.CANDIDATE_SHA,
+              status: 'completed',
+              conclusion: report.status === 'passed' && report.executed === true && process.env.TEST_STEP_OUTCOME === 'success' ? 'success' : 'failure',
+              output: {
+                title: report.summary || 'Dynamic verification result',
+                summary: JSON.stringify(report, null, 2).slice(0, 60000),
+                text: 'Executed on GitHub-hosted runner. Run ID: ' + process.env.RUN_ID
+              }
+            });
