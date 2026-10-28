@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { executeIsolatedVerification, validateGeneratedTests, type GeneratedTestCase } from "./verification.js";
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -220,11 +221,12 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    }
    const review = JSON.parse(reviewText.trim());
    const testCases = Array.isArray(review.testCases) ? review.testCases : [];
+   const testBundle = typeof review.testBundle === "string" ? review.testBundle : "";
    const highRisk = Array.isArray(review.findings) && review.findings.some((finding: any) => ["critical", "high"].includes(String(finding.severity || "").toLowerCase()));
    const testIds = testCases.map((test: any) => typeof test?.id === "string" ? test.id.trim() : "");
    const uniqueTestIds = testIds.every((testId: string) => testId.length > 0) && new Set(testIds).size === testCases.length;
    const completeTestCases = testCases.every((test: any) => test && typeof test.area === "string" && typeof test.scenario === "string" && test.scenario.trim().length > 0 && typeof test.expectedResult === "string" && test.expectedResult.trim().length > 0 && ["ui", "api", "integration", "static"].includes(test.executionLayer));
-   const validDecision = review.decision === "approve" && !highRisk && testCases.length >= 100 && testCases.length <= 150 && uniqueTestIds && completeTestCases;
+   const validDecision = review.decision === "approve" && !highRisk && validateGeneratedTests(testCases) && uniqueTestIds && completeTestCases && testBundle.trim().length >= 80;
    await addEvent(id, "review_agent.completed", {
      decision: validDecision ? "approved" : "rejected",
      summary: String(review.summary || "Permission review completed."),
@@ -270,6 +272,22 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    const finalBranchRef = await github("/repos/" + owner + "/" + name + "/git/ref/heads/" + encodeURIComponent(branch), credentials.githubToken);
    const candidateSha = String(finalBranchRef.object?.sha || "");
    if (!candidateSha) throw new Error("Cannot verify candidate commit SHA; publication blocked.");
+   const verification = await executeIsolatedVerification({
+     repository: repo, baseSha: String(baseRef.object?.sha || ""), candidateSha, task,
+     testCases: testCases as GeneratedTestCase[], testBundle, githubToken: credentials.githubToken
+   });
+   await addEvent(id, "agent.isolated_verification_completed", {
+     status: verification.status, executed: verification.executed, summary: verification.summary,
+     testCount: verification.testCount, passedCount: verification.passedCount, failedCount: verification.failedCount,
+     failures: verification.failures, runner: verification.runner
+   }, "agent");
+   if (verification.status !== "passed" || !verification.executed) {
+     await addEvent(id, "agent.publication_blocked", {
+       message: "Isolated tests did not produce a complete passing execution report. No pull request will be created.",
+       verificationStatus: verification.status, failures: verification.failures
+     }, "agent");
+     throw new Error("Isolated verification did not pass; publication blocked. " + verification.summary);
+   }
    let checksPassed = false;
    let lastCheckSummary = "No GitHub Actions checks were reported.";
    for (let attempt = 0; attempt < 60; attempt++) {
