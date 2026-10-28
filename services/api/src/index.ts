@@ -324,8 +324,6 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
            content: Buffer.from(edit.content, "utf8").toString("base64"), branch, sha: current.sha
          })
        });
-       const known = contents.find(f => f.path === edit.path);
-       if (known) known.content = edit.content;
        const prior = edits.find((e: any) => e.path === edit.path);
        if (prior) prior.content = edit.content; else edits.push(edit);
        await addEvent(id, "agent.repair_file_committed", { attempt: repairAttempt, path: edit.path, branch }, "agent");
