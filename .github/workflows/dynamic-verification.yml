@@ -101,7 +101,7 @@ jobs:
               testCount: results.length,
               passedCount: results.length - failed.length,
               failedCount: failed.length,
-              failures: failed,
+              failures: failed.slice(0, 15).map(x => ({ id: x.id, passed: false, message: x.message.slice(0, 1000) })),
               summary: failed.length ? failed.length + ' generated tests failed.' : 'All ' + results.length + ' generated tests passed.'
             };
             fs.writeFileSync('.agent-verification-report.json', JSON.stringify(report), { mode: 0o600 });
