@@ -18,6 +18,8 @@ export type VerificationResult = {
 };
 
 const LAYERS = new Set<ExecutionLayer>(["ui", "api", "integration", "static"]);
+const API = "https://api.github.com";
+const WORKFLOW = "dynamic-verification.yml";
 
 export function validateGeneratedTests(value: unknown): value is GeneratedTestCase[] {
   if (!Array.isArray(value) || value.length < 100 || value.length > 150) return false;
@@ -35,10 +37,24 @@ export function validateGeneratedTests(value: unknown): value is GeneratedTestCa
   return true;
 }
 
+async function githubRequest(path: string, token: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(API + path, {
+    ...init,
+    headers: {
+      authorization: "Bearer " + token,
+      accept: "application/vnd.github+json",
+      "content-type": "application/json",
+      "x-github-api-version": "2022-11-28",
+      ...(init.headers || {})
+    },
+    signal: AbortSignal.timeout(30000)
+  });
+}
+
 /**
- * Execute Agent 2's generated test bundle in a separately deployed, isolated runner.
- * The runner is deliberately a separate trust boundary: the API must never execute
- * arbitrary repository code in its own process. No fallback to model-only approval.
+ * Uses GitHub-hosted Actions runners. No Render Docker daemon, runner URL, or
+ * runner secret is required. The workflow creates a uniquely named check run
+ * containing the complete execution report; missing/invalid reports fail closed.
  */
 export async function executeIsolatedVerification(input: {
   repository: string;
@@ -49,80 +65,105 @@ export async function executeIsolatedVerification(input: {
   testBundle: string;
   githubToken: string;
 }): Promise<VerificationResult> {
-  const endpoint = process.env.VERIFICATION_RUNNER_URL?.trim();
-  const secret = process.env.VERIFICATION_RUNNER_SECRET?.trim();
-  if (!endpoint || !secret) {
-    return {
-      status: "unavailable", executed: false,
-      summary: "Isolated verification runner is not configured. Publication is blocked; generated tests are not execution evidence.",
-      testCount: input.testCases.length, passedCount: 0, failedCount: 0, failures: [],
-      runner: "not-configured"
-    };
+  const unavailable = (summary: string): VerificationResult => ({
+    status: "unavailable", executed: false, summary,
+    testCount: input.testCases.length, passedCount: 0, failedCount: 0, failures: [],
+    runner: "github-actions"
+  });
+  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(input.repository);
+  if (!match) return unavailable("Invalid repository name; publication blocked.");
+  if (!/^[0-9a-f]{40}$/i.test(input.candidateSha)) return unavailable("Invalid candidate commit SHA; publication blocked.");
+  if (!validateGeneratedTests(input.testCases) || input.testBundle.trim().length < 80) {
+    return unavailable("Generated test matrix or executable harness is invalid; publication blocked.");
   }
-  let response: Response;
+
+  const runId = crypto.randomUUID();
+  const testCases = JSON.stringify(input.testCases);
+  const payload = {
+    ref: "main",
+    inputs: {
+      run_id: runId,
+      candidate_sha: input.candidateSha,
+      test_cases: testCases,
+      test_bundle: input.testBundle
+    }
+  };
+  // GitHub workflow_dispatch limits the total inputs payload. Never truncate tests.
+  if (JSON.stringify(payload).length > 60000) {
+    return unavailable("Generated tests exceed GitHub Actions dispatch size limits. Reduce the harness size; publication blocked.");
+  }
+
+  const owner = match[1];
+  const repo = match[2];
+  const dispatchPath = "/repos/" + owner + "/" + repo + "/actions/workflows/" + WORKFLOW + "/dispatches";
+  let dispatch: Response;
   try {
-    response = await fetch(new URL("/v1/verify", endpoint), {
-      method: "POST",
-      headers: { "content-type": "application/json", "authorization": "Bearer " + secret },
-      body: JSON.stringify({
-        repository: input.repository,
-        baseSha: input.baseSha,
-        candidateSha: input.candidateSha,
-        task: input.task,
-        testCases: input.testCases,
-        testBundle: input.testBundle,
-        githubToken: input.githubToken
-      }),
-      signal: AbortSignal.timeout(Number(process.env.VERIFICATION_TIMEOUT_MS || 900000))
+    dispatch = await githubRequest(dispatchPath, input.githubToken, {
+      method: "POST", body: JSON.stringify(payload)
     });
   } catch (error) {
-    return {
-      status: "unavailable", executed: false,
-      summary: "Isolated runner could not be reached: " + (error instanceof Error ? error.message : String(error)),
-      testCount: input.testCases.length, passedCount: 0, failedCount: 0, failures: [],
-      runner: endpoint
-    };
+    return unavailable("Could not dispatch GitHub-hosted verification: " + (error instanceof Error ? error.message : String(error)));
   }
-  if (!response.ok) {
-    return {
-      status: "unavailable", executed: false,
-      summary: "Isolated runner returned HTTP " + response.status + "; publication blocked.",
-      testCount: input.testCases.length, passedCount: 0, failedCount: 0, failures: [],
-      runner: endpoint
-    };
+  if (dispatch.status !== 204) {
+    const detail = (await dispatch.text().catch(() => "")).slice(0, 1000);
+    return unavailable("GitHub Actions dispatch failed with HTTP " + dispatch.status + ". Ensure the workflow is on the default branch and the token can dispatch workflows. " + detail);
   }
-  const result = await response.json() as Record<string, unknown>;
-  const allowedStatuses = ["passed", "failed"] as const;
-  if (!allowedStatuses.includes(result.status as typeof allowedStatuses[number]) ||
-      result.executed !== true ||
-      typeof result.testCount !== "number" ||
-      typeof result.passedCount !== "number" ||
-      typeof result.failedCount !== "number" ||
-      !Array.isArray(result.failures) ||
-      typeof result.summary !== "string") {
-    return {
-      status: "unavailable", executed: false,
-      summary: "Isolated runner returned an invalid or incomplete execution report; publication blocked.",
-      testCount: input.testCases.length, passedCount: 0, failedCount: 0, failures: [],
-      runner: endpoint
-    };
+
+  const checkName = "Agent2 Dynamic Verification " + runId;
+  const deadline = Date.now() + Number(process.env.VERIFICATION_TIMEOUT_MS || 900000);
+  while (Date.now() < deadline) {
+    let response: Response;
+    try {
+      response = await githubRequest(
+        "/repos/" + owner + "/" + repo + "/commits/" + encodeURIComponent(input.candidateSha) + "/check-runs?per_page=100",
+        input.githubToken
+      );
+    } catch (error) {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      continue;
+    }
+    if (!response.ok) {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      continue;
+    }
+    const body = await response.json() as { check_runs?: Array<Record<string, any>> };
+    const check = (body.check_runs || []).find(item => item.name === checkName);
+    if (check?.status === "completed") {
+      const summary = typeof check.output?.summary === "string" ? check.output.summary : "";
+      let report: Record<string, any>;
+      try { report = JSON.parse(summary); }
+      catch { return unavailable("GitHub verification completed without a valid execution report; publication blocked."); }
+      const valid = report.runId === runId &&
+        report.candidateSha === input.candidateSha &&
+        report.executed === true &&
+        (report.status === "passed" || report.status === "failed") &&
+        Number.isInteger(report.testCount) &&
+        Number.isInteger(report.passedCount) &&
+        Number.isInteger(report.failedCount) &&
+        Array.isArray(report.failures) &&
+        typeof report.summary === "string";
+      if (!valid) return unavailable("GitHub verification returned a malformed or mismatched report; publication blocked.");
+      const failures = report.failures.filter((f: any) => f && typeof f.id === "string" && typeof f.message === "string");
+      const passed = check.conclusion === "success" &&
+        report.status === "passed" &&
+        report.testCount === input.testCases.length &&
+        report.passedCount === report.testCount &&
+        report.failedCount === 0 &&
+        failures.length === 0;
+      return {
+        status: passed ? "passed" : "failed",
+        executed: true,
+        summary: report.summary,
+        testCount: report.testCount,
+        passedCount: report.passedCount,
+        failedCount: report.failedCount,
+        failures,
+        runner: "github-actions:" + String(check.html_url || "")
+      };
+    }
+    await new Promise(resolve => setTimeout(resolve, 5000));
   }
-  const failures = result.failures.filter((f: any) => f && typeof f.id === "string" && typeof f.message === "string");
-  const passed = result.status === "passed" &&
-    result.testCount >= input.testCases.length &&
-    result.failedCount === 0 &&
-    result.passedCount === result.testCount &&
-    failures.length === 0;
-  return {
-    status: passed ? "passed" : "failed",
-    executed: true,
-    summary: result.summary,
-    testCount: result.testCount,
-    passedCount: result.passedCount,
-    failedCount: result.failedCount,
-    failures,
-    runner: endpoint
-  };
+  return unavailable("Timed out waiting for GitHub-hosted test execution. Publication blocked.");
 }
 
 export function buildRepairPrompt(task: string, originalFiles: Array<{ path: string; content: string }>, edits: Array<{ path: string; content: string }>, failures: Array<{ id: string; message: string }>, attempt: number, maxAttempts: number): string {
