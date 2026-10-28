@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { buildRepairPrompt, executeIsolatedVerification, validateGeneratedTests, type GeneratedTestCase } from "./verification.js";
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
@@ -141,6 +142,28 @@ async function github(path: string, token: string, init: RequestInit = {}) {
  if (!response.ok) throw new Error("GitHub API " + response.status + ": " + String((data as any).message || "request failed"));
  return data as any;
 }
+
+async function requestProviderJson(provider: string, key: string, model: string, prompt: string, role: string): Promise<any> {
+ let text = "";
+ if (provider === "anthropic") {
+   const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: 16000, system: role + ". Return valid JSON only.", messages: [{ role: "user", content: prompt }] }) });
+   const data = await response.json().catch(() => ({})) as any;
+   if (!response.ok) throw new Error("Anthropic repair/review request failed: " + (data.error?.message || response.status));
+   text = (data.content || []).filter((x: any) => x.type === "text").map((x: any) => x.text).join("\n");
+ } else if (provider === "gemini") {
+   const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(key), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: role + ". Return valid JSON only." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 16000 } }) });
+   const data = await response.json().catch(() => ({})) as any;
+   if (!response.ok) throw new Error("Gemini repair/review request failed: " + (data.error?.message || response.status));
+   text = data.candidates?.[0]?.content?.parts?.map((x: any) => x.text || "").join("\n") || "{}";
+ } else {
+   const endpoint = provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
+   const response = await fetch(endpoint, { method: "POST", headers: { Authorization: "Bearer " + key, "Content-Type": "application/json", ...(provider === "openrouter" ? { "HTTP-Referer": process.env.PUBLIC_APP_URL || "https://multiplayer-agent-app.onrender.com", "X-Title": "Multiplayer Agent Verification" } : {}) }, body: JSON.stringify({ model, temperature: 0, max_tokens: 16000, response_format: { type: "json_object" }, messages: [{ role: "system", content: role + ". Return valid JSON only." }, { role: "user", content: prompt }] }) });
+   const data = await response.json().catch(() => ({})) as any;
+   if (!response.ok) throw new Error("Model repair/review request failed: " + (data.error?.message || response.status));
+   text = data.choices?.[0]?.message?.content || "{}";
+ }
+ return JSON.parse(text.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""));
+}
 async function runAgent(session: Session, credentials: AgentCredentials) {
  const id = session.id;
  try {
@@ -198,7 +221,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      "Check security, authorization, secrets, injection, data exposure, dependency/config risk, regressions, correctness, accessibility, UI states, API/backend behavior, error handling, and whether the requested feature is actually implemented.",
      "Generate a test matrix of 100 to 150 distinct, actionable test cases (target exactly 100 to control cost). Cover UI/browser, API/backend, auth/authorization, security/negative cases, edge cases, regression, accessibility/responsiveness, and failure/recovery paths as applicable to this change. Each case must have id, area, scenario, expectedResult, and executionLayer ('ui', 'api', 'integration', or 'static'). Do not claim tests have been executed; these are proposed test cases unless an execution tool has actually run them.",
      "Reject if any critical/high security finding exists, if the patch exceeds scope, if it changes secrets or deployment configuration unexpectedly, if the diff cannot be assessed, or if key requirements are missing. A test matrix is not evidence of passing tests.",
-     "Return ONLY valid JSON with schema: {decision:'approve'|'reject',summary:string,findings:[{severity:'critical'|'high'|'medium'|'low',file:string,issue:string,recommendation:string}],testCases:[{id:string,area:string,scenario:string,expectedResult:string,executionLayer:'ui'|'api'|'integration'|'static'}],requiredFixes:string[]}. Keep each test case concise. Exactly 100 test cases are requested."
+     "Return ONLY valid JSON with schema: {decision:'approve'|'reject',summary:string,findings:[{severity:'critical'|'high'|'medium'|'low',file:string,issue:string,recommendation:string}],testCases:[{id:string,area:string,scenario:string,expectedResult:string,executionLayer:'ui'|'api'|'integration'|'static'}],testBundle:string,requiredFixes:string[]}. testBundle must be JavaScript CommonJS source exporting an async function (or runTests) accepting {repositoryRoot,testCases} and returning exactly one {id,passed,message} result per case, with IDs matching testCases exactly. The harness must include project test/build commands and behavior-specific assertions grounded in the actual repository and proposed edits; it must not be a placeholder or merely print success. The isolated runner executes this bundle with network disabled. Keep cases concise. Exactly 100 test cases are requested."
    ].join("\n") + "\nORIGINAL TASK:\n" + task + "\nPROPOSED EDITS:\n" + JSON.stringify(edits.map((e: any) => ({ path: e.path, content: e.content }))) + "\nORIGINAL FILES:\n" + JSON.stringify(contents.map(f => ({ path: f.path, content: f.content })));
    let reviewText = "";
    if (reviewerCredentials.provider === "anthropic") {
@@ -220,11 +243,12 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    }
    const review = JSON.parse(reviewText.trim());
    const testCases = Array.isArray(review.testCases) ? review.testCases : [];
+   const testBundle = typeof review.testBundle === "string" ? review.testBundle : "";
    const highRisk = Array.isArray(review.findings) && review.findings.some((finding: any) => ["critical", "high"].includes(String(finding.severity || "").toLowerCase()));
    const testIds = testCases.map((test: any) => typeof test?.id === "string" ? test.id.trim() : "");
    const uniqueTestIds = testIds.every((testId: string) => testId.length > 0) && new Set(testIds).size === testCases.length;
    const completeTestCases = testCases.every((test: any) => test && typeof test.area === "string" && typeof test.scenario === "string" && test.scenario.trim().length > 0 && typeof test.expectedResult === "string" && test.expectedResult.trim().length > 0 && ["ui", "api", "integration", "static"].includes(test.executionLayer));
-   const validDecision = review.decision === "approve" && !highRisk && testCases.length >= 100 && testCases.length <= 150 && uniqueTestIds && completeTestCases;
+   const validDecision = review.decision === "approve" && !highRisk && validateGeneratedTests(testCases) && uniqueTestIds && completeTestCases && testBundle.trim().length >= 80;
    await addEvent(id, "review_agent.completed", {
      decision: validDecision ? "approved" : "rejected",
      summary: String(review.summary || "Permission review completed."),
@@ -270,6 +294,72 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    const finalBranchRef = await github("/repos/" + owner + "/" + name + "/git/ref/heads/" + encodeURIComponent(branch), credentials.githubToken);
    const candidateSha = String(finalBranchRef.object?.sha || "");
    if (!candidateSha) throw new Error("Cannot verify candidate commit SHA; publication blocked.");
+   let verifiedCases = testCases as GeneratedTestCase[];
+   let verifiedBundle = testBundle;
+   let verification = await executeIsolatedVerification({
+     repository: repo, baseSha: String(baseRef.object?.sha || ""), candidateSha, task,
+     testCases: verifiedCases, testBundle: verifiedBundle, githubToken: credentials.githubToken
+   });
+   const maxRepairAttempts = 2;
+   for (let repairAttempt = 1; (verification.status !== "passed" || !verification.executed) && repairAttempt <= maxRepairAttempts; repairAttempt++) {
+     await addEvent(id, "agent.verification_failed", {
+       attempt: repairAttempt, maxRepairAttempts, status: verification.status,
+       summary: verification.summary, failures: verification.failures,
+       message: "Sending actual isolated execution failures to Agent 1 for repair."
+     }, "agent");
+     if (verification.status === "unavailable") break;
+     const repairPrompt = buildRepairPrompt(task, contents, edits, verification.failures, repairAttempt, maxRepairAttempts);
+     const repaired = await requestProviderJson(credentials.provider, credentials.providerKey, model, repairPrompt, "Agent 1 repair agent");
+     const repairEdits = Array.isArray(repaired.edits) ? repaired.edits.filter((e: any) => contents.some(f => f.path === e.path) && typeof e.content === "string") : [];
+     if (!repairEdits.length) {
+       await addEvent(id, "agent.repair_unavailable", { attempt: repairAttempt, reason: repaired.summary || "Agent 1 did not return valid in-scope repair edits." }, "agent");
+       break;
+     }
+     for (const edit of repairEdits) {
+       const path = edit.path.split("/").map(encodeURIComponent).join("/");
+       const current = await github("/repos/" + owner + "/" + name + "/contents/" + path + "?ref=" + encodeURIComponent(branch), credentials.githubToken);
+       await github("/repos/" + owner + "/" + name + "/contents/" + path, credentials.githubToken, {
+         method: "PUT", body: JSON.stringify({
+           message: "agent: repair verification failure " + repairAttempt,
+           content: Buffer.from(edit.content, "utf8").toString("base64"), branch, sha: current.sha
+         })
+       });
+       const known = contents.find(f => f.path === edit.path);
+       if (known) known.content = edit.content;
+       const prior = edits.find((e: any) => e.path === edit.path);
+       if (prior) prior.content = edit.content; else edits.push(edit);
+       await addEvent(id, "agent.repair_file_committed", { attempt: repairAttempt, path: edit.path, branch }, "agent");
+     }
+     const candidateRefAfterRepair = await github("/repos/" + owner + "/" + name + "/git/ref/heads/" + encodeURIComponent(branch), credentials.githubToken);
+     const repairedSha = String(candidateRefAfterRepair.object?.sha || "");
+     if (!repairedSha) throw new Error("Could not resolve repaired candidate SHA; publication blocked.");
+     const reReviewPrompt = "Independently re-review Agent 1's repaired patch against the original task and files. Generate a fresh 100-150 case test matrix and a complete executable CommonJS testBundle that exports async function({repositoryRoot,testCases}) returning one {id,passed,message} result per case. Reject critical/high findings or missing requirements. Return JSON only: {decision,summary,findings,testCases,testBundle,requiredFixes}.\\nTASK:\\n" + task + "\\nREPAIRED EDITS:\\n" + JSON.stringify(edits) + "\\nORIGINAL FILES:\\n" + JSON.stringify(contents);
+     const reReview = await requestProviderJson(credentials.reviewerProvider, credentials.reviewerProviderKey, reviewerModelResolved, reReviewPrompt, "Agent 2 independent security reviewer");
+     const reHighRisk = Array.isArray(reReview.findings) && reReview.findings.some((f: any) => ["critical", "high"].includes(String(f.severity || "").toLowerCase()));
+     if (reReview.decision !== "approve" || reHighRisk || !validateGeneratedTests(reReview.testCases) || typeof reReview.testBundle !== "string" || reReview.testBundle.trim().length < 80) {
+       await addEvent(id, "review_agent.repair_rejected", { attempt: repairAttempt, decision: reReview.decision || "invalid", findings: reReview.findings || [], message: "Agent 2 rejected or could not validate repaired changes; publication remains blocked." }, "agent");
+       break;
+     }
+     verifiedCases = reReview.testCases as GeneratedTestCase[];
+     verifiedBundle = reReview.testBundle;
+     await addEvent(id, "review_agent.repair_approved", { attempt: repairAttempt, testCaseCount: verifiedCases.length, message: "Agent 2 re-reviewed the repaired diff and generated a fresh test suite." }, "agent");
+     verification = await executeIsolatedVerification({
+       repository: repo, baseSha: String(baseRef.object?.sha || ""), candidateSha: repairedSha, task,
+       testCases: verifiedCases, testBundle: verifiedBundle, githubToken: credentials.githubToken
+     });
+   }
+   await addEvent(id, "agent.isolated_verification_completed", {
+     status: verification.status, executed: verification.executed, summary: verification.summary,
+     testCount: verification.testCount, passedCount: verification.passedCount, failedCount: verification.failedCount,
+     failures: verification.failures, runner: verification.runner, maxRepairAttempts
+   }, "agent");
+   if (verification.status !== "passed" || !verification.executed) {
+     await addEvent(id, "agent.publication_blocked", {
+       message: "Isolated tests did not produce a complete passing execution report after bounded repair/retest. No pull request will be created.",
+       verificationStatus: verification.status, failures: verification.failures, maxRepairAttempts
+     }, "agent");
+     throw new Error("Isolated verification did not pass after bounded repair/retest; publication blocked. " + verification.summary);
+   }
    let checksPassed = false;
    let lastCheckSummary = "No GitHub Actions checks were reported.";
    for (let attempt = 0; attempt < 60; attempt++) {
