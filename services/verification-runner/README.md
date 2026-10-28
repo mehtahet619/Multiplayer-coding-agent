@@ -9,7 +9,7 @@ This is a separately deployed, authenticated runner service for Agent 2's genera
 - Configure `VERIFICATION_RUNNER_SECRET` to the same high-entropy secret used by the API.
 - Configure the API with `VERIFICATION_RUNNER_URL` and `VERIFICATION_RUNNER_SECRET`.
 
-Deploy this service on a host where Docker is available. Do not mount the host filesystem or Docker socket inside candidate test containers. The runner host itself needs Docker access, so treat it as a privileged infrastructure component.
+Deploy this service on a host where Docker is available. The runner process must be able to access a Docker daemon; prefer a rootless Docker daemon or a TLS-protected remote daemon via `DOCKER_HOST`. If you mount a daemon socket into the runner service, that grants the runner host-level control and must be treated as a privileged infrastructure component. Never mount the socket into candidate test containers. Keep the runner reachable only from the API over HTTPS/private networking.
 
 ## Harness contract
 
