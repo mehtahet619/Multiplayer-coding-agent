@@ -24,9 +24,13 @@
 4. Rejected, malformed, or incomplete review results block branch creation and pull-request creation.
 5. After approval, Agent 1 writes the edits to a uniquely named feature branch and opens a pull request. It does not merge to the default branch.
 
-## Important validation limitation
+## Dynamic execution, repair, and retest
 
-The current hosted API does **not** run 100–150 browser/UI/backend scenarios. Agent 2 produces a tailored 100–150-case test matrix and performs model-based review; the cases are surfaced in session activity for review. Actual execution requires a test runner / isolated browser-and-backend environment and passing CI checks. Do not represent generated test cases as executed tests or treat AI approval as a substitute for test results or human review.
+The API now requires an executable test bundle from Agent 2 in addition to the 100–150-case matrix. The bundle must export a CommonJS async function (or `runTests`) that returns one `{ id, passed, message }` result for every generated test case. The separately deployed `services/verification-runner` fetches the exact candidate commit and runs the bundle in a constrained Docker container with networking disabled during execution. It rejects missing, duplicate, malformed, or failed per-case results.
+
+If tests fail, the API sends the actual failure evidence to Agent 1. Agent 1 may submit repairs up to two times. Agent 2 independently re-reviews the repaired diff and produces a fresh test matrix and executable bundle; the runner executes the fresh suite against the repaired commit. Missing runner configuration, unavailable execution, invalid reports, failed tests, reviewer rejection, or exhausted retries block pull-request creation. The runner currently supports Node.js projects; unsupported projects fail closed.
+
+The runner is a separate privileged infrastructure component because its host needs Docker access. Never expose the Docker socket to candidate containers, never pass provider credentials into test containers, and review the runner deployment security before making it publicly reachable. Human review remains required before merge.
 
 ## Credentials and cost
 
