@@ -171,8 +171,8 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error("Anthropic API " + response.status + ": " + (data.error?.message || "request failed"));
      outputText = (data.content || []).filter((x:any)=>x.type==="text").map((x:any)=>x.text).join("\n");
-   } else if (reviewerCredentials.provider === "gemini") {
-     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(reviewerModelResolved) + ":generateContent?key=" + encodeURIComponent(reviewerCredentials.providerKey), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "You produce safe, minimal code edits as JSON. Return valid JSON only." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json" } }) });
+   } else if (credentials.provider === "gemini") {
+     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(credentials.providerKey), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "You produce safe, minimal code edits as JSON. Return valid JSON only." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json" } }) });
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error("Gemini API " + response.status + ": " + (data.error?.message || "request failed"));
      outputText = data.candidates?.[0]?.content?.parts?.map((x:any)=>x.text || "").join("\n") || "{}";
@@ -206,8 +206,8 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error("Permission agent (Anthropic) failed: " + (data.error?.message || response.status));
      reviewText = (data.content || []).filter((x:any)=>x.type==="text").map((x:any)=>x.text).join("\n");
-   } else if (credentials.provider === "gemini") {
-     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(credentials.providerKey), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "You are an independent security gate. Return valid JSON only and never approve by default." }] }, contents: [{ role: "user", parts: [{ text: reviewPrompt }] }], generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 8192 } }) });
+   } else if (reviewerCredentials.provider === "gemini") {
+     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(reviewerModelResolved) + ":generateContent?key=" + encodeURIComponent(reviewerCredentials.providerKey), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "You are an independent security gate. Return valid JSON only and never approve by default." }] }, contents: [{ role: "user", parts: [{ text: reviewPrompt }] }], generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 8192 } }) });
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error("Permission agent (Gemini) failed: " + (data.error?.message || response.status));
      reviewText = data.candidates?.[0]?.content?.parts?.map((x:any)=>x.text || "").join("\n") || "{}";
