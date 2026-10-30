@@ -107,3 +107,17 @@ a { overflow-wrap: anywhere; }
  .landing-footer nav { order: 4; width: 100%; flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+/* Remove decorative gradient treatments and keep the UI calm. */
+.landing-shell { background-image: none !important; }
+.landing-shell .landing-logo, .landing-shell .primary-cta,
+.landing-shell .waitlist-input-row button, .landing-shell .platform-card button,
+.landing-shell .platform-ready, .landing-shell .waitlist-section,
+.landing-shell .landing-cta, .landing-shell .code-window,
+.landing-shell .agent-card, .landing-shell .float-chip,
+.landing-shell .feature-strip, .landing-shell .steps-grid article,
+.landing-shell .platform-card, .landing-shell .strip-icon,
+.landing-shell .agent-avatar, .landing-shell .agent-progress i {
+ background-image: none !important;
+}
+.landing-shell .agent-progress i { background: #83c9bd !important; }
