@@ -51,22 +51,38 @@ async function ownedSession(id: string, ownerId: string, token: string): Promise
  if (error) throw error; return data ? mapSession(data) : null;
 }
 app.get("/api/v1/sessions", async (req, res) => {
- const db = dbForToken((req as any).accessToken);
- const { data, error } = await db.from("sessions").select("*").eq("owner_id", (req as any).user.id).order("created_at", { ascending: false });
- if (error) return res.status(500).json({ error: "Could not load sessions." });
- res.json((data || []).map(mapSession));
+ try {
+   const db = dbForToken((req as any).accessToken);
+   const { data, error } = await db.from("sessions").select("*").eq("owner_id", (req as any).user.id).order("created_at", { ascending: false });
+   if (error) {
+     console.error("GET /api/v1/sessions database error:", { code: error.code, message: error.message, details: error.details, hint: error.hint });
+     return res.status(500).json({ error: "Could not load sessions: " + error.message, code: error.code || "DATABASE_ERROR" });
+   }
+   return res.json((data || []).map(mapSession));
+ } catch (error) {
+   console.error("GET /api/v1/sessions unexpected error:", error);
+   return res.status(500).json({ error: "Could not load sessions because the API encountered an unexpected error." });
+ }
 });
 app.post("/api/v1/sessions", async (req, res) => {
+ try {
  const ownerId = (req as any).user.id as string;
  const db = dbForToken((req as any).accessToken);
  const repository = typeof req.body?.repository === "string" ? req.body.repository.trim() : "";
  if (repository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
  const title = String(req.body?.title || "Shared coding session").trim().slice(0,120) || "Shared coding session";
  const { data, error } = await db.from("sessions").insert({ owner_id: ownerId, title, repository: repository || null, status: "idle" }).select("*").single();
- if (error || !data) return res.status(500).json({ error: "Could not create session in database." });
+ if (error || !data) {
+   console.error("POST /api/v1/sessions database error:", { code: error?.code, message: error?.message, details: error?.details, hint: error?.hint });
+   return res.status(500).json({ error: "Could not create session: " + (error?.message || "database returned no session row"), code: error?.code || "DATABASE_ERROR" });
+ }
  const session = mapSession(data); sessionDbClients.set(session.id, db); sessions.unshift(session); events.set(session.id, []); instructions.set(session.id, []);
  await addEvent(session.id, "session.created", { title: session.title, repository: repository || null }, "system");
- res.status(201).json(session);
+ return res.status(201).json(session);
+ } catch (error) {
+   console.error("POST /api/v1/sessions unexpected error:", error);
+   return res.status(500).json({ error: "Could not create session because the API encountered an unexpected error." });
+ }
 });
 app.get("/api/v1/sessions/:id/events", async (req, res) => {
  const ownerId = (req as any).user.id as string;
