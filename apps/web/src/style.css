@@ -94,3 +94,107 @@ a { overflow-wrap: anywhere; }
  .landing-footer nav { order: 4; width: 100%; flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+
+/* Authenticated workspace: use the available desktop canvas instead of a narrow centered column. */
+.app-shell {
+  min-height: 100svh;
+  width: 100%;
+  grid-template-columns: 260px minmax(0, 1fr);
+  align-items: stretch;
+}
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  min-height: 100svh;
+  overflow-y: auto;
+}
+.main-panel {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  margin: 0;
+  padding: 30px clamp(24px, 3.2vw, 64px) 36px;
+}
+.topbar, .welcome, .workspace, .error-banner {
+  width: 100%;
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.welcome {
+  margin-top: clamp(28px, 5vh, 64px);
+  margin-bottom: 36px;
+}
+.welcome h2 { font-size: clamp(28px, 2.2vw, 38px); }
+.welcome > p { max-width: 680px; }
+.create-card {
+  display: grid;
+  grid-template-columns: minmax(150px, 220px) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 22px;
+  row-gap: 12px;
+  padding: clamp(22px, 2.2vw, 34px);
+  text-align: left;
+}
+.create-card > label {
+  align-self: center;
+  margin: 0;
+  line-height: 1.5;
+}
+.create-card > input,
+.create-card > select,
+.create-card > .create-row {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+.create-card > .helper-text,
+.create-card > .agent-role-divider,
+.create-card > p {
+  grid-column: 1 / -1;
+}
+.create-card > .helper-text {
+  margin: -5px 0 5px 242px;
+}
+.create-card > .agent-role-divider { margin: 12px 0 2px; }
+.create-card > p.helper-text { margin: 0; }
+.create-row input { min-width: 0; }
+.workspace { max-width: 1280px; }
+.error-banner { max-width: 1280px; }
+@media (min-width: 1500px) {
+  .main-panel { padding-left: clamp(56px, 5vw, 100px); padding-right: clamp(56px, 5vw, 100px); }
+}
+@media (max-width: 900px) {
+  .app-shell { grid-template-columns: 220px minmax(0, 1fr); }
+  .main-panel { padding: 24px 22px 32px; }
+  .create-card { grid-template-columns: 1fr; gap: 9px; }
+  .create-card > .helper-text { margin: -3px 0 8px; }
+  .create-card > .agent-role-divider { margin-top: 16px; }
+}
+@media (max-width: 720px) {
+  .app-shell { display: flex; flex-direction: column; }
+  .sidebar {
+    position: relative;
+    top: auto;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+  .main-panel {
+    width: 100%;
+    min-height: 0;
+    padding: 22px 16px calc(28px + env(safe-area-inset-bottom));
+  }
+  .topbar { align-items: flex-start; }
+  .topbar h1 { overflow-wrap: anywhere; }
+  .welcome { margin: 28px auto; width: 100%; }
+  .create-card { padding: 18px; }
+  .create-card > .helper-text { margin: 0 0 8px; }
+  .create-row { flex-direction: column; }
+  .create-row button { min-height: 46px; }
+  .workspace { width: 100%; }
+  .error-banner { width: 100%; }
+}
