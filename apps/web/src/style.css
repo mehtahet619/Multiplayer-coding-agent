@@ -175,3 +175,16 @@ a { overflow-wrap: anywhere; }
  .app-shell .instruction-box button { width: 100%; }
  .app-shell .error-banner { width: 100%; }
 }
+
+
+/* Autonomous agent workspace: remove purple gradients and use the neutral teal system. */
+:root { --agent-accent: #83c9bd; }
+.app-shell button, .app-shell .session-item.active, .app-shell .agent-role-divider,
+.app-shell .test-matrix-details { background-image: none !important; }
+.app-shell .create-row button, .app-shell .instruction-box button,
+.app-shell .workspace button.primary, .app-shell .nav-signin {
+ background-color: #176b67 !important; border-color: #278d84 !important; color: #f4fffd !important;
+}
+.app-shell .session-item.active, .app-shell .agent-role-divider,
+.app-shell .test-matrix-details { border-color: #315a58 !important; }
+.app-shell a, .app-shell .status-active { color: #83c9bd; }
