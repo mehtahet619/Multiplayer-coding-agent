@@ -121,3 +121,57 @@ a { overflow-wrap: anywhere; }
  background-image: none !important;
 }
 .landing-shell .agent-progress i { background: #83c9bd !important; }
+
+
+/* Authenticated workspace: use the available desktop width and a readable form grid. */
+.app-shell { grid-template-columns: 248px minmax(0, 1fr); width: 100%; max-width: none; overflow-x: clip; }
+.app-shell > .main-panel { width: 100%; max-width: none; min-width: 0; margin: 0; padding: 30px clamp(22px, 3.2vw, 64px) 36px; }
+.app-shell .topbar { width: 100%; }
+.app-shell .welcome { width: min(100%, 1180px); max-width: 1180px; margin: 42px auto 36px; }
+.app-shell .welcome h2 { font-size: clamp(25px, 2.2vw, 34px); }
+.app-shell .welcome > p { max-width: 680px; font-size: 14px; }
+.app-shell .create-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 22px; width: 100%; padding: clamp(20px, 2.4vw, 34px); text-align: left; }
+.app-shell .form-field { display: flex; flex-direction: column; min-width: 0; gap: 8px; }
+.app-shell .form-field-wide, .app-shell .form-section-heading { grid-column: 1 / -1; }
+.app-shell .form-field label { margin: 0; color: #c4ccda; font-size: 13px; font-weight: 600; }
+.app-shell .form-field input, .app-shell .form-field select { width: 100%; min-height: 46px; margin: 0; padding: 12px 14px; border-radius: 8px; font-size: 14px; }
+.app-shell .form-field input:focus, .app-shell .form-field select:focus { border-color: #897cf5; box-shadow: 0 0 0 3px #897cf522; }
+.app-shell .create-row { display: flex; min-width: 0; gap: 10px; }
+.app-shell .create-row input { flex: 1; width: 100%; }
+.app-shell .create-row button { min-height: 46px; padding: 0 20px; border-radius: 8px; font-size: 13px; }
+.app-shell .create-row button:disabled { opacity: .65; cursor: wait; }
+.app-shell .form-section-heading { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; padding: 15px 0 9px; border-bottom: 1px solid #303748; }
+.app-shell .form-section-heading strong { color: #e8eaf0; font: 600 17px 'Space Grotesk', sans-serif; }
+.app-shell .form-section-heading span, .app-shell .helper-text { color: #9ca7b9; font-size: 12px; line-height: 1.65; }
+.app-shell .helper-text { margin: 0; }
+.app-shell .agent-role-divider { display: none; }
+.app-shell .workspace { width: min(100%, 1400px); max-width: 1400px; margin: 28px auto 0; }
+.app-shell .error-banner { width: min(100%, 1180px); max-width: 1180px; margin: 16px auto; white-space: pre-wrap; }
+.app-shell > .main-panel > footer { padding: 30px 0 0; }
+@media (max-width: 1050px) {
+ .app-shell { grid-template-columns: 220px minmax(0,1fr); }
+ .app-shell > .main-panel { padding: 26px 22px 32px; }
+ .app-shell .create-card { gap: 15px; padding: 20px; }
+}
+@media (max-width: 720px) {
+ .app-shell { display: flex; flex-direction: column; min-height: 100svh; }
+ .app-shell .sidebar { width: 100%; min-height: auto; padding: 14px 16px; }
+ .app-shell .sidebar .brand { padding-bottom: 14px; }
+ .app-shell .sidebar .new-session { margin-bottom: 10px; }
+ .app-shell .sidebar .session-list { max-height: 150px; overflow: auto; }
+ .app-shell > .main-panel { min-height: 0; display: block; padding: 20px 14px 30px; }
+ .app-shell .topbar { align-items: flex-start; padding-bottom: 18px; }
+ .app-shell .topbar h1 { font-size: 21px; }
+ .app-shell .welcome { margin: 28px auto; width: 100%; padding: 0; border: 0; background: transparent; box-shadow: none; }
+ .app-shell .welcome h2 { font-size: 25px; }
+ .app-shell .welcome > p { font-size: 13px; }
+ .app-shell .create-card { grid-template-columns: minmax(0,1fr); gap: 16px; padding: 18px; }
+ .app-shell .form-field-wide, .app-shell .form-section-heading { grid-column: 1; }
+ .app-shell .create-row { flex-direction: column; }
+ .app-shell .create-row button { width: 100%; min-height: 46px; }
+ .app-shell .workspace { margin-top: 20px; }
+ .app-shell .workspace-head { flex-direction: column; align-items: stretch; }
+ .app-shell .instruction-box { flex-direction: column; }
+ .app-shell .instruction-box button { width: 100%; }
+ .app-shell .error-banner { width: 100%; }
+}

@@ -28,6 +28,14 @@ const cancelled = new Set<string>();
 const paused = new Set<string>();
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "multiplayer-coding-agent-api" }));
+app.get("/health/database", async (_req, res) => {
+ const { error } = await supabase.from("sessions").select("id").limit(1);
+ if (error) {
+   console.error("Database readiness check failed:", { code: error.code, message: error.message, details: error.details, hint: error.hint });
+   return res.status(503).json({ ok: false, service: "database", code: error.code || "DATABASE_ERROR", error: error.message });
+ }
+ return res.json({ ok: true, service: "database", checked: ["sessions"] });
+});
 app.post("/api/v1/waitlist", async (req, res) => {
  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "Enter a valid email address." });
@@ -53,7 +61,7 @@ async function ownedSession(id: string, ownerId: string, token: string): Promise
 app.get("/api/v1/sessions", async (req, res) => {
  const db = dbForToken((req as any).accessToken);
  const { data, error } = await db.from("sessions").select("*").eq("owner_id", (req as any).user.id).order("created_at", { ascending: false });
- if (error) return res.status(500).json({ error: "Could not load sessions." });
+ if (error) { console.error("Could not load sessions:", { code: error.code, message: error.message, details: error.details, hint: error.hint }); return res.status(500).json({ error: "Could not load sessions: " + error.message, code: error.code || "DATABASE_ERROR" }); }
  res.json((data || []).map(mapSession));
 });
 app.post("/api/v1/sessions", async (req, res) => {
@@ -63,7 +71,7 @@ app.post("/api/v1/sessions", async (req, res) => {
  if (repository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
  const title = String(req.body?.title || "Shared coding session").trim().slice(0,120) || "Shared coding session";
  const { data, error } = await db.from("sessions").insert({ owner_id: ownerId, title, repository: repository || null, status: "idle" }).select("*").single();
- if (error || !data) return res.status(500).json({ error: "Could not create session in database." });
+ if (error || !data) { console.error("Could not create session in database:", { code: error?.code, message: error?.message, details: error?.details, hint: error?.hint }); return res.status(500).json({ error: error?.message || "Database did not return the created session.", code: error?.code || "DATABASE_ERROR" }); }
  const session = mapSession(data); sessionDbClients.set(session.id, db); sessions.unshift(session); events.set(session.id, []); instructions.set(session.id, []);
  await addEvent(session.id, "session.created", { title: session.title, repository: repository || null }, "system");
  res.status(201).json(session);
