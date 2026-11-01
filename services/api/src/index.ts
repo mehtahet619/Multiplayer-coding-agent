@@ -67,7 +67,17 @@ app.get("/api/v1/sessions", async (req, res) => {
 app.post("/api/v1/sessions", async (req, res) => {
  const ownerId = (req as any).user.id as string;
  const db = dbForToken((req as any).accessToken);
- const repository = typeof req.body?.repository === "string" ? req.body.repository.trim() : "";
+ const rawRepository = typeof req.body?.repository === "string" ? req.body.repository.trim() : "";
+ let repository = rawRepository;
+ if (/^https?:\/\//i.test(repository)) {
+   try {
+     const parsed = new URL(repository);
+     if (!["github.com", "www.github.com"].includes(parsed.hostname.toLowerCase())) throw new Error("Not GitHub");
+     repository = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+   } catch {
+     return res.status(400).json({ error: "Enter a GitHub repository URL or owner/repo, for example https://github.com/mehtahet619/Multiplayer-coding-agent." });
+   }
+ }
  const baseBranch = typeof req.body?.baseBranch === "string" ? req.body.baseBranch.trim().slice(0, 255) : "";
  const repositoryPath = typeof req.body?.repositoryPath === "string" ? req.body.repositoryPath.trim().replace(/^\/+|\/+$/g, "").slice(0, 500) : "";
  if (repositoryPath.split("/").some((part: string) => part === "." || part === "..")) return res.status(400).json({ error: "Repository path cannot contain . or .. segments." });
