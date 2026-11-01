@@ -64,7 +64,8 @@ export default function App() {
  function describeEvent(ev: EventItem) {
   const presentation = eventPresentation[ev.type];
   if (presentation) return { ...presentation, detail: presentation.detail(ev.payload || {}) };
-  const readable = ev.type.replace(/^agent\\./, "").replace(/^review_agent\\./, "review ").replace(/[._]/g, " ").replace(/\\b\\w/g, ch => ch.toUpperCase());
+  const rawLabel = ev.type.startsWith("agent.") ? ev.type.slice(6) : ev.type.startsWith("review_agent.") ? "review " + ev.type.slice(13) : ev.type;
+  const readable = rawLabel.split(/[._]/g).filter(Boolean).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
   return { title: readable || "Agent update", detail: String(ev.payload?.summary || ev.payload?.message || ev.payload?.text || "Workflow event recorded."), agent: ev.actor.type === "user" ? "YOU" : "AGENT" };
  }
  function normalizeGitHubRepository(value: string): string {
