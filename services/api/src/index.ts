@@ -19,7 +19,7 @@ const allowed = (process.env.WEB_ORIGIN || "http://localhost:5173").split(",").m
 app.use(cors({ origin: allowed, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 const io = new Server(server, { cors: { origin: allowed } });
-type Session = { id: string; ownerId: string; title: string; status: string; createdAt: string; repository?: string; branch?: string };
+type Session = { id: string; ownerId: string; title: string; status: string; createdAt: string; repository?: string; branch?: string; baseBranch?: string; repositoryPath?: string };
 type Event = { type: string; sessionId: string; seq: number; timestamp: string; actor: { type: "user" | "agent" | "system"; id: string }; payload: Record<string, unknown> };
 const sessions: Session[] = [];
 const events = new Map<string, Event[]>();
@@ -53,7 +53,7 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
  (req as any).user = data.user; (req as any).accessToken = token; next();
 }
 app.use("/api/v1", requireAuth);
-function mapSession(row: any): Session { return { id: row.id, ownerId: row.owner_id, title: row.title, status: row.status, createdAt: row.created_at, ...(row.repository ? { repository: row.repository } : {}), ...(row.branch ? { branch: row.branch } : {}) }; }
+function mapSession(row: any): Session { return { id: row.id, ownerId: row.owner_id, title: row.title, status: row.status, createdAt: row.created_at, ...(row.repository ? { repository: row.repository } : {}), ...(row.branch ? { branch: row.branch } : {}), ...(row.base_branch ? { baseBranch: row.base_branch } : {}), ...(row.repository_path ? { repositoryPath: row.repository_path } : {}) }; }
 async function ownedSession(id: string, ownerId: string, token: string): Promise<Session | null> {
  const { data, error } = await dbForToken(token).from("sessions").select("*").eq("id", id).eq("owner_id", ownerId).maybeSingle();
  if (error) throw error; return data ? mapSession(data) : null;
@@ -68,12 +68,15 @@ app.post("/api/v1/sessions", async (req, res) => {
  const ownerId = (req as any).user.id as string;
  const db = dbForToken((req as any).accessToken);
  const repository = typeof req.body?.repository === "string" ? req.body.repository.trim() : "";
+ const baseBranch = typeof req.body?.baseBranch === "string" ? req.body.baseBranch.trim().slice(0, 255) : "";
+ const repositoryPath = typeof req.body?.repositoryPath === "string" ? req.body.repositoryPath.trim().replace(/^\/+|\/+$/g, "").slice(0, 500) : "";
+ if (repositoryPath.split("/").some((part: string) => part === "." || part === "..")) return res.status(400).json({ error: "Repository path cannot contain . or .. segments." });
  if (repository && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return res.status(400).json({ error: "Repository must be in owner/repo format." });
  const title = String(req.body?.title || "Shared coding session").trim().slice(0,120) || "Shared coding session";
- const { data, error } = await db.from("sessions").insert({ owner_id: ownerId, title, repository: repository || null, status: "idle" }).select("*").single();
+ const { data, error } = await db.from("sessions").insert({ owner_id: ownerId, title, repository: repository || null, base_branch: baseBranch || null, repository_path: repositoryPath || null, status: "idle" }).select("*").single();
  if (error || !data) { console.error("Could not create session in database:", { code: error?.code, message: error?.message, details: error?.details, hint: error?.hint }); return res.status(500).json({ error: error?.message || "Database did not return the created session.", code: error?.code || "DATABASE_ERROR" }); }
  const session = mapSession(data); sessionDbClients.set(session.id, db); sessions.unshift(session); events.set(session.id, []); instructions.set(session.id, []);
- await addEvent(session.id, "session.created", { title: session.title, repository: repository || null }, "system");
+ await addEvent(session.id, "session.created", { title: session.title, repository: repository || null, baseBranch: baseBranch || null, repositoryPath: repositoryPath || null }, "system");
  res.status(201).json(session);
 });
 app.get("/api/v1/sessions/:id/events", async (req, res) => {
@@ -179,9 +182,10 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    const [owner, name] = repo.split("/");
    await addEvent(id, "agent.started", { repository: repo, message: "Inspecting repository and preparing a change." }, "agent");
    const repoInfo = await github("/repos/" + owner + "/" + name, credentials.githubToken);
-   const base = repoInfo.default_branch || "main";
+   const base = session.baseBranch || repoInfo.default_branch || "main";
    const tree = await github("/repos/" + owner + "/" + name + "/git/trees/" + encodeURIComponent(base) + "?recursive=1", credentials.githubToken);
-   const files = (tree.tree || []).filter((x: any) => x.type === "blob" && /\.(ts|tsx|js|jsx|json|md|css|html|py|go|rs|yml|yaml)$/.test(x.path) && !/(node_modules|dist|build|\.lock$|\.min\.)/.test(x.path)).slice(0, 100);
+   const pathPrefix = session.repositoryPath ? session.repositoryPath.replace(/^\/+|\/+$/g, "") + "/" : "";
+   const files = (tree.tree || []).filter((x: any) => x.type === "blob" && (!pathPrefix || String(x.path).startsWith(pathPrefix)) && /\.(ts|tsx|js|jsx|json|md|css|html|py|go|rs|yml|yaml)$/.test(x.path) && !/(node_modules|dist|build|\.lock$|\.min\.)/.test(x.path)).slice(0, 100);
    const contents: Array<{path:string;sha:string;content:string}> = [];
    for (const file of files) {
      if (cancelled.has(id)) throw new Error("Task cancelled.");
