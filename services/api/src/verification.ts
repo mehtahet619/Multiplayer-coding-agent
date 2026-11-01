@@ -22,7 +22,7 @@ const API = "https://api.github.com";
 const WORKFLOW = "dynamic-verification.yml";
 
 export function validateGeneratedTests(value: unknown): value is GeneratedTestCase[] {
-  if (!Array.isArray(value) || value.length < 100 || value.length > 150) return false;
+  if (!Array.isArray(value) || value.length < 20 || value.length > 30) return false;
   const ids = new Set<string>();
   for (const item of value) {
     if (!item || typeof item !== "object") return false;
