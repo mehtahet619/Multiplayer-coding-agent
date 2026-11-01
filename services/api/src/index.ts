@@ -27,6 +27,7 @@ const instructions = new Map<string, string[]>();
 const cancelled = new Set<string>();
 const paused = new Set<string>();
 
+app.get("/", (_req, res) => res.json({ service: "Multiplayer Coding Agent API", status: "online", health: "/health", databaseHealth: "/health/database", message: "This is the API service. Open the web workspace to use the coding agent." }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "multiplayer-coding-agent-api" }));
 app.get("/health/database", async (_req, res) => {
  const { error } = await supabase.from("sessions").select("id").limit(1);
