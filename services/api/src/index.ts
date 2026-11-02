@@ -476,7 +476,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    let verifiedCases = testCases as GeneratedTestCase[];
    let verifiedBundle = testBundle;
    let verification = await executeIsolatedVerification({
-     repository: repo, baseSha: String(baseRef.object?.sha || ""), candidateSha, task,
+     repository: repo, workflowRef: base, baseSha: String(baseRef.object?.sha || ""), candidateSha, task,
      testCases: verifiedCases, testBundle: verifiedBundle, githubToken: credentials.githubToken
    });
    const maxRepairAttempts = Math.max(1, Math.min(8, Number(process.env.AGENT_MAX_REPAIR_ITERATIONS || 5)));
@@ -521,7 +521,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      verifiedBundle = reReview.testBundle;
      await addEvent(id, "review_agent.repair_approved", { attempt: repairAttempt, testCaseCount: verifiedCases.length, message: "Agent 2 re-reviewed the repaired diff and generated a fresh test suite." }, "agent");
      verification = await executeIsolatedVerification({
-       repository: repo, baseSha: String(baseRef.object?.sha || ""), candidateSha: repairedSha, task,
+       repository: repo, workflowRef: base, baseSha: String(baseRef.object?.sha || ""), candidateSha: repairedSha, task,
        testCases: verifiedCases, testBundle: verifiedBundle, githubToken: credentials.githubToken
      });
    }
