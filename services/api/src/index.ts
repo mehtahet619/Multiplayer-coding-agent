@@ -252,36 +252,52 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      .sort((a: any, b: any) => b.score - a.score || a.path.localeCompare(b.path));
    const maxContextTokens = configuredContextTokenLimit();
    const maxContextChars = maxContextTokens * 4;
-   const treeBudgetChars = Math.min(12000, Math.floor(maxContextChars * 0.08));
-   const treeText = allPaths.slice(0, 1200).map((path: string) => path).join("\n");
+   // Keep headroom for provider message framing, role instructions, and tokenizer variance.
+   const safePromptChars = Math.floor(maxContextChars * 0.82);
+   const treeBudgetChars = Math.min(10000, Math.floor(safePromptChars * 0.06));
+   const treeText = allPaths.slice(0, 1200).join("\n");
    const boundedTree = treeText.length > treeBudgetChars ? treeText.slice(0, treeBudgetChars) + "\n... file tree truncated ..." : treeText;
    const contents: Array<{path:string;sha:string;content:string}> = [];
    const selected = ranked.slice(0, Math.min(160, ranked.length));
-   let contextChars = boundedTree.length + task.length + 12000;
-   let omittedContextFiles = Math.max(0, eligible.length - selected.length);
+   const outsideTopRankedLimit = Math.max(0, ranked.length - selected.length);
+   const unsupportedFileCount = Math.max(0, allPaths.length - eligible.length);
    let skippedByBudget = 0;
+   let skippedUnreadable = 0;
+   let fetchedFileCount = 0;
+   const promptFor = (files: Array<{path:string;sha:string;content:string}>) => {
+     const serialized = JSON.stringify(files.map(f => ({path:f.path,content:f.content})));
+     return "You are a careful coding agent. Review the repository file tree and selected relevant source files, then implement the user's task. Return ONLY JSON matching {summary:string, edits:[{path:string,content:string}], notes:string[]}. Each edit must contain the COMPLETE replacement file content. Only edit existing files included in SELECTED FILES; never edit secrets, CI deployment config, package lockfiles, or files outside the task scope. The file tree is for navigation only. If a needed file was not selected, explain this rather than inventing its contents. Keep edits focused.\nTASK:\n" + task + "\nREPOSITORY FILE TREE (paths only):\n" + boundedTree + "\nSELECTED FILES (highest keyword relevance first):\n" + serialized;
+   };
+   // Fetch by relevance, but leave enough budget for prompt framing and JSON escaping.
    for (const file of selected) {
      if (cancelled.has(id)) throw new Error("Task cancelled.");
      if (paused.has(id)) await waitWhilePaused(id);
-     const remainingChars = maxContextChars - contextChars;
-     if (remainingChars < 1500) { skippedByBudget += selected.length - contents.length - skippedByBudget; break; }
      const blob = await github("/repos/" + owner + "/" + name + "/contents/" + file.path.split("/").map(encodeURIComponent).join("/") + "?ref=" + encodeURIComponent(base), credentials.githubToken);
-     if (blob.encoding !== "base64" || typeof blob.content !== "string") { omittedContextFiles++; continue; }
+     fetchedFileCount++;
+     if (blob.encoding !== "base64" || typeof blob.content !== "string") { skippedUnreadable++; continue; }
      const decoded = Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
-     if (decoded.includes("\u0000")) { omittedContextFiles++; continue; }
-     const contentBudget = Math.min(remainingChars - 1000, 80000);
-     if (decoded.length > contentBudget) { skippedByBudget++; continue; }
-     contents.push({ path: file.path, sha: blob.sha, content: decoded });
-     contextChars += decoded.length;
+     if (decoded.includes("\u0000")) { skippedUnreadable++; continue; }
+     const candidate = { path: file.path, sha: blob.sha, content: decoded };
+     const trial = promptFor([...contents, candidate]);
+     if (estimateTokens(trial) > Math.floor(safePromptChars / 4)) { skippedByBudget++; continue; }
+     contents.push(candidate);
    }
-   const serializedFiles = JSON.stringify(contents.map(f => ({path:f.path,content:f.content})));
-   const prompt = "You are a careful coding agent. Review the repository file tree and selected relevant source files, then implement the user's task. Return ONLY JSON matching {summary:string, edits:[{path:string,content:string}], notes:string[]}. Each edit must contain the COMPLETE replacement file content. Only edit existing files included in SELECTED FILES; never edit secrets, CI deployment config, package lockfiles, or files outside the task scope. The file tree is for navigation only. If a needed file was not selected, explain this rather than inventing its contents. Keep edits focused.\nTASK:\n" + task + "\nREPOSITORY FILE TREE (paths only):\n" + boundedTree + "\nSELECTED FILES (highest keyword relevance first):\n" + serializedFiles;
+   // Final serialized-prompt guard: discard the lowest-ranked files until it fits.
+   let prompt = promptFor(contents);
+   while (contents.length > 0 && prompt.length > safePromptChars) {
+     contents.pop();
+     skippedByBudget++;
+     prompt = promptFor(contents);
+   }
+   if (prompt.length > safePromptChars) {
+     throw new Error("Task instructions and repository file tree exceed the safe context budget. Narrow the repository path or shorten the task instructions.");
+   }
    const estimatedPromptTokens = estimateTokens(prompt);
-   if (estimatedPromptTokens > maxContextTokens) throw new Error("Prompt context budget exceeded before model request (" + estimatedPromptTokens + " estimated tokens > " + maxContextTokens + "). Reduce AGENT_CONTEXT_MAX_TOKENS or narrow the repository path.");
+   const omittedContextFiles = unsupportedFileCount + outsideTopRankedLimit + skippedUnreadable;
    await addEvent(id, "agent.analyzing", {
-     fileCount: contents.length, eligibleFileCount: eligible.length, omittedContextFiles, skippedByBudget,
-     contextChars, estimatedPromptTokens, maxContextTokens,
-     message: "Repository context selected by task relevance. " + omittedContextFiles + " unsupported/binary/generated files and " + skippedByBudget + " lower-priority files were skipped; estimated prompt " + estimatedPromptTokens + "/" + maxContextTokens + " tokens."
+     fileCount: contents.length, eligibleFileCount: eligible.length, unsupportedFileCount, outsideTopRankedLimit, skippedUnreadable, skippedByBudget, fetchedFileCount,
+     contextChars: prompt.length, estimatedPromptTokens, maxContextTokens, safePromptChars,
+     message: "Context selection: " + contents.length + " files included; " + unsupportedFileCount + " unsupported/binary/generated files excluded; " + outsideTopRankedLimit + " eligible files fell outside the top-160 relevance shortlist; " + skippedUnreadable + " files were unreadable; " + skippedByBudget + " relevant files were skipped to stay within the safe context budget. Estimated prompt: " + estimatedPromptTokens + "/" + maxContextTokens + " tokens."
    }, "agent");
    const model = credentials.model || ({ openai: "gpt-4.1-mini", anthropic: "claude-sonnet-4-20250514", gemini: "gemini-2.5-flash", openrouter: "openai/gpt-4.1-mini" } as Record<string,string>)[credentials.provider];
    let outputText = "";
