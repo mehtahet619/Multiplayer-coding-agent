@@ -164,26 +164,42 @@ async function github(path: string, token: string, init: RequestInit = {}) {
  return data as any;
 }
 
-async function requestProviderJson(provider: string, key: string, model: string, prompt: string, role: string): Promise<any> {
+function configuredTokenLimit(name: string, fallback = 8192): number {
+ const raw = Number(process.env[name]);
+ if (!Number.isFinite(raw) || raw <= 0) return fallback;
+ return Math.max(1024, Math.min(16384, Math.floor(raw)));
+}
+function parseModelJson(raw: string, label: string, truncated = false): any {
+ if (truncated) throw new Error(label + " output was truncated at its token limit. Increase the corresponding output-token setting or reduce task/context size; no partial changes were accepted.");
+ const cleaned = raw.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
+ try { return JSON.parse(cleaned); }
+ catch { throw new Error(label + " returned incomplete or invalid JSON. Reduce context size or increase its output-token limit, then retry."); }
+}
+async function requestProviderJson(provider: string, key: string, model: string, prompt: string, role: string, limitEnv = "AGENT1_REPAIR_MAX_OUTPUT_TOKENS"): Promise<any> {
+ const maxOutputTokens = configuredTokenLimit(limitEnv);
  let text = "";
+ let truncated = false;
  if (provider === "anthropic") {
-   const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: 16000, system: role + ". Return valid JSON only.", messages: [{ role: "user", content: prompt }] }) });
+   const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: maxOutputTokens, system: role + ". Return valid JSON only.", messages: [{ role: "user", content: prompt }] }) });
    const data = await response.json().catch(() => ({})) as any;
    if (!response.ok) throw new Error("Anthropic repair/review request failed: " + (data.error?.message || response.status));
    text = (data.content || []).filter((x: any) => x.type === "text").map((x: any) => x.text).join("\n");
+   truncated = data.stop_reason === "max_tokens";
  } else if (provider === "gemini") {
-   const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(key), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: role + ". Return valid JSON only." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 16000 } }) });
+   const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(key), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: role + ". Return valid JSON only." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens } }) });
    const data = await response.json().catch(() => ({})) as any;
    if (!response.ok) throw new Error("Gemini repair/review request failed: " + (data.error?.message || response.status));
    text = data.candidates?.[0]?.content?.parts?.map((x: any) => x.text || "").join("\n") || "{}";
+   truncated = data.candidates?.[0]?.finishReason === "MAX_TOKENS";
  } else {
    const endpoint = provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
-   const response = await fetch(endpoint, { method: "POST", headers: { Authorization: "Bearer " + key, "Content-Type": "application/json", ...(provider === "openrouter" ? { "HTTP-Referer": process.env.PUBLIC_APP_URL || "https://multiplayer-agent-app.onrender.com", "X-Title": "Multiplayer Agent Verification" } : {}) }, body: JSON.stringify({ model, temperature: 0, max_tokens: 8192, response_format: { type: "json_object" }, messages: [{ role: "system", content: role + ". Return valid JSON only." }, { role: "user", content: prompt }] }) });
+   const response = await fetch(endpoint, { method: "POST", headers: { Authorization: "Bearer " + key, "Content-Type": "application/json", ...(provider === "openrouter" ? { "HTTP-Referer": process.env.PUBLIC_APP_URL || "https://multiplayer-agent-app.onrender.com", "X-Title": "Multiplayer Agent Verification" } : {}) }, body: JSON.stringify({ model, temperature: 0, max_tokens: maxOutputTokens, response_format: { type: "json_object" }, messages: [{ role: "system", content: role + ". Return valid JSON only." }, { role: "user", content: prompt }] }) });
    const data = await response.json().catch(() => ({})) as any;
    if (!response.ok) throw new Error("Model repair/review request failed: " + (data.error?.message || response.status));
    text = data.choices?.[0]?.message?.content || "{}";
+   truncated = data.choices?.[0]?.finish_reason === "length";
  }
- return JSON.parse(text.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""));
+ return parseModelJson(text, role, truncated);
 }
 async function runAgent(session: Session, credentials: AgentCredentials) {
  const id = session.id;
