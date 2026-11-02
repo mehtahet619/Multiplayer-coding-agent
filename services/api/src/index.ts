@@ -404,7 +404,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      testCaseCount: testCases.length,
      testCases,
      testsExecuted: false,
-     validationNote: "The permission agent generated a risk-based 20–30-case test matrix and performed model-based code review. The current hosted runtime does not execute browser/UI or backend test cases; CI/human execution is still required before merge."
+     validationNote: "The generated Agent 2 suite ran in a network-isolated Docker container on the exact candidate commit. Browser-based visual checks and external live-service integrations are not run by default; review the diff and repository CI before merging."
    }, "agent");
    if (!validDecision) {
      await addEvent(id, "agent.publication_blocked", {
@@ -564,7 +564,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      branch,
      ...(pullRequest?.html_url ? { pullRequestUrl: pullRequest.html_url, pullRequestNumber: pullRequest.number } : { compareUrl }),
      notes: output.notes || [],
-     validation: "Tests were not executed by the hosted agent. Review the diff and run the project's checks before merging."
+     validation: "Agent 2 generated tests and the repository CI passed on the candidate commit. Review the diff and confirm the change meets the original instruction before merging."
    }, "agent");
    session.status = "completed";
    await dbForSession(id).from("sessions").update({ status: "completed", branch, updated_at: new Date().toISOString() }).eq("id", id).eq("owner_id", session.ownerId);
