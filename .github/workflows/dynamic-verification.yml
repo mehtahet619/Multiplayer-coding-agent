@@ -156,7 +156,7 @@ jobs:
             failures: valid ? failed.slice(0, 25).map(x => ({id:x.id,message:x.message.slice(0,1000)})) : [{id:'sandbox-execution',message:'Sandbox failed or returned an invalid/mismatched report.'}],
             summary: valid ? (failed.length ? failed.length + ' generated tests failed.' : 'All ' + cases.length + ' generated tests passed.') : 'Isolated execution did not produce a valid report.'
           };
-          fs.writeFileSync('.agent-verification-report.json', JSON.stringify(report), { mode: 0o600 });
+          fs.writeFileSync('/tmp/agent-verification-report.json', JSON.stringify(report), { mode: 0o600 });
           console.log(JSON.stringify(report));
           if (report.status !== 'passed') process.exitCode = 1;
           NODE
@@ -173,7 +173,7 @@ jobs:
             const crypto = require('node:crypto');
             let report;
             try {
-              report = JSON.parse(fs.readFileSync('.agent-verification-report.json', 'utf8'));
+              report = JSON.parse(fs.readFileSync('/tmp/agent-verification-report.json', 'utf8'));
             } catch {
               report = {
                 runId: process.env.RUN_ID,
