@@ -34,12 +34,21 @@ The Compose file starts PostgreSQL only by default to keep local development str
 
 ## Two-agent adversarial verification gate
 - Agent 1 implements the task on a separate candidate branch; it never writes directly to the default branch.
-- Agent 2 independently reviews the actual patch, checks permissions/security, and dynamically generates 100–150 repository-specific test cases plus an executable test harness.
+- Agent 2 independently reviews the actual patch, checks permissions/security, and dynamically generates a risk-based 20–30-case repository-specific test matrix plus an executable test harness.
 - The API dispatches the test matrix and executable harness to GitHub Actions, which checks out the exact candidate commit and runs tests on a fresh GitHub-hosted runner. No separate Docker host, runner URL, or runner secret is required.
 - The workflow publishes a uniquely named check run containing the execution report. The API accepts only a matching report for the exact candidate SHA and run ID.
 - On test failure, the actual failure evidence is sent to Agent 1. Agent 1 may repair the patch up to two times; Agent 2 re-reviews the repaired patch and generates a fresh test suite before retesting.
 - Publication fails closed if dispatch is unavailable, the report is incomplete, any test fails, Agent 2 rejects, or the bounded repair loop is exhausted. A generated test plan is never treated as a passing execution report.
 - The `Dynamic Verification Executor` workflow must exist on the target repository's default branch, and the GitHub token must be allowed to dispatch Actions workflows and read check runs. See [Agent roles and approval](docs/AGENT_ROLES_AND_APPROVAL.md).
+
+### AI token and context budgets
+The API uses bounded defaults to avoid unexpectedly large model requests. Configure these optional Render environment variables (or local API environment):
+- `AGENT1_MAX_OUTPUT_TOKENS`: Agent 1 initial implementation response, default 8192.
+- `AGENT1_REPAIR_MAX_OUTPUT_TOKENS`: Agent 1 repair response, default 8192.
+- `AGENT2_MAX_OUTPUT_TOKENS`: Agent 2 review and re-review responses, default 8192.
+- `AGENT_CONTEXT_MAX_CHARS`: maximum repository source context sent per run, default 120000 characters (bounded to 20000–500000).
+
+Output token limits are bounded to 1024–16384. If a provider reports that it stopped because the output limit was reached, the run fails with a clear truncation error instead of attempting to parse or publish incomplete JSON. Increase the relevant limit or reduce the task/context size when that happens.
 
 ## Security before public deployment
 - Replace development identity headers with proper authentication.
