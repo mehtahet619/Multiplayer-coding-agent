@@ -58,6 +58,7 @@ async function githubRequest(path: string, token: string, init: RequestInit = {}
  */
 export async function executeIsolatedVerification(input: {
   repository: string;
+  workflowRef?: string;
   baseSha: string;
   candidateSha: string;
   task: string;
@@ -80,7 +81,7 @@ export async function executeIsolatedVerification(input: {
   const runId = crypto.randomUUID();
   const testCases = JSON.stringify(input.testCases);
   const payload = {
-    ref: "main",
+    ref: input.workflowRef || "main",
     inputs: {
       run_id: runId,
       candidate_sha: input.candidateSha,
