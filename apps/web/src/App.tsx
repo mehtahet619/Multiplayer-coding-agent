@@ -52,6 +52,8 @@ export default function App() {
   "agent.audit_repair_proposed": { title: "Agent 1 updated implementation", detail: p => String(p.summary || "Agent 1 submitted audit repairs."), agent: "AGENT 1" },
   "review_agent.audit_rechecked": { title: "Agent 2 re-audited implementation", detail: p => String(p.message || p.summary || "Checking the repaired acceptance criteria."), agent: "AGENT 2" },
   "review_agent.audit_repair_unavailable": { title: "Automatic audit repair stopped", detail: p => String(p.reason || p.message || "Agent 1 could not produce a valid repair."), agent: "SYSTEM" },
+  "review_agent.test_generation_started": { title: "Agent 2 Test Engineer started", detail: p => String(p.message || "Creating the independent test suite."), agent: "AGENT 2" },
+  "review_agent.test_generation_completed": { title: "Agent 2 test suite prepared", detail: p => String(p.message || p.summary || "Generated the test matrix and harness."), agent: "AGENT 2" },
   "review_agent.completed": { title: "Requirement audit completed", detail: p => String(p.summary || p.decision || "Agent 2 completed its audit."), agent: "AGENT 2" },
   "review_agent.repair_approved": { title: "Re-audit passed", detail: p => String(p.message || "Agent 2 approved the repaired implementation and generated fresh tests."), agent: "AGENT 2" },
   "review_agent.repair_rejected": { title: "Audit found remaining gaps", detail: p => String(p.message || "Agent 2 found requirements that still need work."), agent: "AGENT 2" },
