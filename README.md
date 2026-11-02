@@ -28,31 +28,30 @@ The Compose file starts PostgreSQL only by default to keep local development str
 
 ## MVP limitations
 - Auth is a development-only email identity header. Replace it with secure cookie/session authentication before exposing publicly.
-- The initial agent worker is a starter loop, not a hardened autonomous coding system. Do not run it on untrusted repositories or expose it publicly until sandboxing, authorization, rate limits, and audit controls are completed.
+- The Python polling worker is a scaffold and is not used by the hosted GitHub-based two-agent workflow. The API workflow uses GitHub-hosted Actions and a disposable Docker sandbox for generated test execution.
 - Model support depends on your local hardware and the selected Ollama model.
 - This is an initial scaffold; full end-to-end behavior has not been verified.
 
-## Two-agent adversarial verification gate
-- Agent 1 implements the task on a separate candidate branch; it never writes directly to the default branch.
-- Agent 2 independently reviews the actual patch, checks permissions/security, and dynamically generates a risk-based 20–30-case repository-specific test matrix plus an executable test harness.
-- The API dispatches the test matrix and executable harness to GitHub Actions, which checks out the exact candidate commit and runs tests on a fresh GitHub-hosted runner. No separate Docker host, runner URL, or runner secret is required.
-- The workflow publishes a uniquely named check run containing the execution report. The API accepts only a matching report for the exact candidate SHA and run ID.
-- On test failure, the actual failure evidence is sent to Agent 1. Agent 1 may repair the patch up to two times; Agent 2 re-reviews the repaired patch and generates a fresh test suite before retesting.
-- Publication fails closed if dispatch is unavailable, the report is incomplete, any test fails, Agent 2 rejects, or the bounded repair loop is exhausted. A generated test plan is never treated as a passing execution report.
-- The `Dynamic Verification Executor` workflow must exist on the target repository's default branch, and the GitHub token must be allowed to dispatch Actions workflows and read check runs. See [Agent roles and approval](docs/AGENT_ROLES_AND_APPROVAL.md).
+## Autonomous Agent 1 / Agent 2 workflow
+- Agent 1 generates complete-file edits from relevance-ranked repository context. No branch is created before review.
+- Agent 2 first audits the original task against every proposed change. If requirements are missing or critical/high findings exist, it sends failure evidence to Agent 1 for bounded repair and independently re-audits.
+- Only after the audit returns explicit acceptance criteria all marked met does a separate Agent 2 Test Engineer model call generate a fresh 20–30-case risk-based test matrix and executable test harness.
+- GitHub Actions checks out the exact candidate SHA. Dependencies install in a disposable resource-limited container with package lifecycle scripts disabled. The generated harness runs in a separate Docker container with no network, a disposable repository copy, no credentials, a non-root user, and CPU/memory/process limits.
+- Actual test failures go back to Agent 1. Agent 2 re-audits every repair and creates a fresh suite before retesting. The candidate branch is created only after the requirement audit passes. Pull-request creation is blocked unless all generated tests and repository CI pass.
+- Configure `AGENT_MAX_AUDIT_REPAIR_ITERATIONS` (default 3) and `AGENT_MAX_REPAIR_ITERATIONS` (default 5) to control the bounded repair loops. See [Agent roles and approval](docs/AGENT_ROLES_AND_APPROVAL.md).
 
 ### AI token and context budgets
 The API uses bounded defaults to avoid unexpectedly large model requests. Configure these optional Render environment variables (or local API environment):
 - `AGENT1_MAX_OUTPUT_TOKENS`: Agent 1 initial implementation response, default 8192.
 - `AGENT1_REPAIR_MAX_OUTPUT_TOKENS`: Agent 1 repair response, default 8192.
 - `AGENT2_MAX_OUTPUT_TOKENS`: Agent 2 review and re-review responses, default 8192.
-- `AGENT_CONTEXT_MAX_CHARS`: maximum repository source context sent per run, default 120000 characters (bounded to 20000–500000).
+- `AGENT_CONTEXT_MAX_TOKENS`: repository context budget, default 60000 tokens (bounded to 4000–80000).
+- `AGENT_MAX_AUDIT_REPAIR_ITERATIONS`: requirement-audit repair rounds, default 3 (bounded 1–6).
+- `AGENT_MAX_REPAIR_ITERATIONS`: failed-test repair rounds, default 5 (bounded 1–8).
 
 Output token limits are bounded to 1024–16384. If a provider reports that it stopped because the output limit was reached, the run fails with a clear truncation error instead of attempting to parse or publish incomplete JSON. Increase the relevant limit or reduce the task/context size when that happens.
 
 ## Security before public deployment
-- Replace development identity headers with proper authentication.
-- Add workspace membership checks on every endpoint and socket command.
-- Run agent tools in isolated containers with resource/network restrictions.
-- Never mount the Docker socket into an agent container or expose credentials to the model.
+- Keep generated test harness execution inside the network-isolated Docker sandbox.
+- Never mount the Docker socket into a candidate container or expose credentials to model/test processes.
 - Add command idempotency, worker leases/recovery, approval records, and rate limiting.
