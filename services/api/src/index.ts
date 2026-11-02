@@ -212,39 +212,50 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    const tree = await github("/repos/" + owner + "/" + name + "/git/trees/" + encodeURIComponent(base) + "?recursive=1", credentials.githubToken);
    const pathPrefix = session.repositoryPath ? session.repositoryPath.replace(/^\/+|\/+$/g, "") + "/" : "";
    const files = (tree.tree || []).filter((x: any) => x.type === "blob" && (!pathPrefix || String(x.path).startsWith(pathPrefix)) && /\.(ts|tsx|js|jsx|json|md|css|html|py|go|rs|yml|yaml)$/.test(x.path) && !/(node_modules|dist|build|\.lock$|\.min\.)/.test(x.path)).slice(0, 100);
+   const maxContextChars = Math.max(20000, Math.min(500000, Number(process.env.AGENT_CONTEXT_MAX_CHARS) || 120000));
    const contents: Array<{path:string;sha:string;content:string}> = [];
+   let contextChars = 0;
+   let omittedContextFiles = 0;
    for (const file of files) {
      if (cancelled.has(id)) throw new Error("Task cancelled.");
      if (paused.has(id)) { await waitWhilePaused(id); }
      const blob = await github("/repos/" + owner + "/" + name + "/contents/" + file.path.split("/").map(encodeURIComponent).join("/") + "?ref=" + encodeURIComponent(base), credentials.githubToken);
      if (blob.encoding === "base64" && typeof blob.content === "string") {
        const decoded = Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
-       if (decoded.length < 30000) contents.push({ path: file.path, sha: blob.sha, content: decoded });
+       if (decoded.length < 30000 && contextChars + decoded.length <= maxContextChars) {
+         contents.push({ path: file.path, sha: blob.sha, content: decoded });
+         contextChars += decoded.length;
+       } else omittedContextFiles++;
      }
    }
    const task = (instructions.get(id) || []).join("\n\n");
    const prompt = "You are a careful coding agent. Review the supplied repository files and implement the user's task. Return ONLY JSON matching {summary:string, edits:[{path:string,content:string}], notes:string[]}. Each edit must contain the COMPLETE replacement file content. Only edit existing files included in the input; never edit secrets, CI deployment config, package lockfiles, or files outside the task scope. If the task cannot be safely completed from the provided files, return edits:[] and explain in summary/notes. Keep edits focused.\nTASK:\n" + task + "\nFILES:\n" + JSON.stringify(contents.map(f => ({path:f.path,content:f.content})));
-   await addEvent(id, "agent.analyzing", { fileCount: contents.length, message: "Sending repository context to the model." }, "agent");
+   await addEvent(id, "agent.analyzing", { fileCount: contents.length, omittedContextFiles, contextChars, maxContextChars, message: "Sending bounded repository context to the model." }, "agent");
    const model = credentials.model || ({ openai: "gpt-4.1-mini", anthropic: "claude-sonnet-4-20250514", gemini: "gemini-2.5-flash", openrouter: "openai/gpt-4.1-mini" } as Record<string,string>)[credentials.provider];
    let outputText = "";
+   let outputTruncated = false;
+   const agent1MaxOutputTokens = configuredTokenLimit("AGENT1_MAX_OUTPUT_TOKENS");
    if (credentials.provider === "anthropic") {
-     const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": credentials.providerKey, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: 8192, system: "You produce safe, minimal code edits as JSON. Return valid JSON only.", messages: [{ role: "user", content: prompt }] }) });
+     const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": credentials.providerKey, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model, max_tokens: agent1MaxOutputTokens, system: "You produce safe, minimal code edits as JSON. Return valid JSON only.", messages: [{ role: "user", content: prompt }] }) });
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error("Anthropic API " + response.status + ": " + (data.error?.message || "request failed"));
      outputText = (data.content || []).filter((x:any)=>x.type==="text").map((x:any)=>x.text).join("\n");
+     outputTruncated = data.stop_reason === "max_tokens";
    } else if (credentials.provider === "gemini") {
-     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(credentials.providerKey), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "You produce safe, minimal code edits as JSON. Return valid JSON only." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json" } }) });
+     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(credentials.providerKey), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "You produce safe, minimal code edits as JSON. Return valid JSON only." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.1, responseMimeType: "application/json", maxOutputTokens: agent1MaxOutputTokens } }) });
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error("Gemini API " + response.status + ": " + (data.error?.message || "request failed"));
      outputText = data.candidates?.[0]?.content?.parts?.map((x:any)=>x.text || "").join("\n") || "{}";
+     outputTruncated = data.candidates?.[0]?.finishReason === "MAX_TOKENS";
    } else {
      const endpoint = credentials.provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
      const response = await fetch(endpoint, { method: "POST", headers: { Authorization: "Bearer " + credentials.providerKey, "Content-Type": "application/json", ...(credentials.provider === "openrouter" ? { "HTTP-Referer": process.env.PUBLIC_APP_URL || "https://multiplayer-agent-app.onrender.com", "X-Title": "Multiplayer Agent" } : {}) }, body: JSON.stringify({ model, temperature: 0.1, max_tokens: 8192, response_format: { type: "json_object" }, messages: [{ role: "system", content: "You produce safe, minimal code edits as JSON." }, { role: "user", content: prompt }] }) });
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error((credentials.provider === "openrouter" ? "OpenRouter" : "OpenAI") + " API " + response.status + ": " + (data.error?.message || "request failed"));
      outputText = data.choices?.[0]?.message?.content || "{}";
+     outputTruncated = data.choices?.[0]?.finish_reason === "length";
    }
-   const output = JSON.parse(outputText.replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, ""));
+   const output = parseModelJson(outputText, "Agent 1", outputTruncated);
    if (cancelled.has(id)) throw new Error("Task cancelled.");
    const edits = Array.isArray(output.edits) ? output.edits.filter((e: any) => contents.some(f => f.path === e.path) && typeof e.content === "string") : [];
    if (!edits.length) { await addEvent(id, "agent.completed", { summary: output.summary || "No safe file edits were proposed.", notes: output.notes || [] }, "agent"); session.status = "completed"; await dbForSession(id).from("sessions").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", id).eq("owner_id", session.ownerId); return; }
@@ -262,24 +273,29 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      "Return ONLY valid JSON with schema: {decision:'approve'|'reject',summary:string,findings:[{severity:'critical'|'high'|'medium'|'low',file:string,issue:string,recommendation:string}],testCases:[{id:string,area:string,scenario:string,expectedResult:string,executionLayer:'ui'|'api'|'integration'|'static'}],testBundle:string,requiredFixes:string[]}. testBundle must be JavaScript CommonJS source exporting an async function (or runTests) accepting {repositoryRoot,testCases} and returning exactly one {id,passed,message} result per case, with IDs matching testCases exactly. The harness must include project test/build commands and behavior-specific assertions grounded in the actual repository and proposed edits; it must not be a placeholder or merely print success. The isolated runner executes this bundle with network disabled. Keep cases concise. Return 20 to 30 high-value test cases, ideally 25. Keep every scenario and expected result concise."
    ].join("\n") + "\nORIGINAL TASK:\n" + task + "\nPROPOSED EDITS:\n" + JSON.stringify(edits.map((e: any) => ({ path: e.path, content: e.content }))) + "\nORIGINAL FILES:\n" + JSON.stringify(contents.map(f => ({ path: f.path, content: f.content })));
    let reviewText = "";
+   let reviewTruncated = false;
+   const agent2MaxOutputTokens = configuredTokenLimit("AGENT2_MAX_OUTPUT_TOKENS");
    if (reviewerCredentials.provider === "anthropic") {
-     const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": reviewerCredentials.providerKey, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model: reviewerModelResolved, max_tokens: 8192, system: "You are an independent security gate. Return valid JSON only and never approve by default.", messages: [{ role: "user", content: reviewPrompt }] }) });
+     const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "x-api-key": reviewerCredentials.providerKey, "anthropic-version": "2023-06-01", "content-type": "application/json" }, body: JSON.stringify({ model: reviewerModelResolved, max_tokens: agent2MaxOutputTokens, system: "You are an independent security gate. Return valid JSON only and never approve by default.", messages: [{ role: "user", content: reviewPrompt }] }) });
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error("Permission agent (Anthropic) failed: " + (data.error?.message || response.status));
      reviewText = (data.content || []).filter((x:any)=>x.type==="text").map((x:any)=>x.text).join("\n");
+     reviewTruncated = data.stop_reason === "max_tokens";
    } else if (reviewerCredentials.provider === "gemini") {
-     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(reviewerModelResolved) + ":generateContent?key=" + encodeURIComponent(reviewerCredentials.providerKey), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "You are an independent security gate. Return valid JSON only and never approve by default." }] }, contents: [{ role: "user", parts: [{ text: reviewPrompt }] }], generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 8192 } }) });
+     const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(reviewerModelResolved) + ":generateContent?key=" + encodeURIComponent(reviewerCredentials.providerKey), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "You are an independent security gate. Return valid JSON only and never approve by default." }] }, contents: [{ role: "user", parts: [{ text: reviewPrompt }] }], generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: agent2MaxOutputTokens } }) });
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error("Permission agent (Gemini) failed: " + (data.error?.message || response.status));
      reviewText = data.candidates?.[0]?.content?.parts?.map((x:any)=>x.text || "").join("\n") || "{}";
+     reviewTruncated = data.candidates?.[0]?.finishReason === "MAX_TOKENS";
    } else {
      const endpoint = reviewerCredentials.provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
-     const response = await fetch(endpoint, { method: "POST", headers: { Authorization: "Bearer " + reviewerCredentials.providerKey, "Content-Type": "application/json", ...(reviewerCredentials.provider === "openrouter" ? { "HTTP-Referer": process.env.PUBLIC_APP_URL || "https://multiplayer-agent-app.onrender.com", "X-Title": "Multiplayer Agent Permission Agent" } : {}) }, body: JSON.stringify({ model: reviewerModelResolved, temperature: 0, max_tokens: 8192, response_format: { type: "json_object" }, messages: [{ role: "system", content: "You are an independent security gate. Return valid JSON only and never approve by default." }, { role: "user", content: reviewPrompt }] }) });
+     const response = await fetch(endpoint, { method: "POST", headers: { Authorization: "Bearer " + reviewerCredentials.providerKey, "Content-Type": "application/json", ...(reviewerCredentials.provider === "openrouter" ? { "HTTP-Referer": process.env.PUBLIC_APP_URL || "https://multiplayer-agent-app.onrender.com", "X-Title": "Multiplayer Agent Permission Agent" } : {}) }, body: JSON.stringify({ model: reviewerModelResolved, temperature: 0, max_tokens: agent2MaxOutputTokens, response_format: { type: "json_object" }, messages: [{ role: "system", content: "You are an independent security gate. Return valid JSON only and never approve by default." }, { role: "user", content: reviewPrompt }] }) });
      const data = await response.json().catch(() => ({})) as any;
      if (!response.ok) throw new Error("Permission agent (" + reviewerCredentials.provider + ") failed: " + (data.error?.message || response.status));
      reviewText = data.choices?.[0]?.message?.content || "{}";
+     reviewTruncated = data.choices?.[0]?.finish_reason === "length";
    }
-   const review = JSON.parse(reviewText.trim());
+   const review = parseModelJson(reviewText, "Agent 2", reviewTruncated);
    const testCases = Array.isArray(review.testCases) ? review.testCases : [];
    const testBundle = typeof review.testBundle === "string" ? review.testBundle : "";
    const highRisk = Array.isArray(review.findings) && review.findings.some((finding: any) => ["critical", "high"].includes(String(finding.severity || "").toLowerCase()));
@@ -370,7 +386,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      const repairedSha = String(candidateRefAfterRepair.object?.sha || "");
      if (!repairedSha) throw new Error("Could not resolve repaired candidate SHA; publication blocked.");
      const reReviewPrompt = "Independently re-review Agent 1's repaired patch against the original task and files. Generate a fresh risk-based 20-30 case test matrix and a complete executable CommonJS testBundle that exports async function({repositoryRoot,testCases}) returning one {id,passed,message} result per case. Reject critical/high findings or missing requirements. Return JSON only: {decision,summary,findings,testCases,testBundle,requiredFixes}.\\nTASK:\\n" + task + "\\nREPAIRED EDITS:\\n" + JSON.stringify(edits) + "\\nORIGINAL FILES:\\n" + JSON.stringify(contents);
-     const reReview = await requestProviderJson(credentials.reviewerProvider, credentials.reviewerProviderKey, reviewerModelResolved, reReviewPrompt, "Agent 2 independent security reviewer");
+     const reReview = await requestProviderJson(credentials.reviewerProvider, credentials.reviewerProviderKey, reviewerModelResolved, reReviewPrompt, "Agent 2 independent security reviewer", "AGENT2_MAX_OUTPUT_TOKENS");
      const reHighRisk = Array.isArray(reReview.findings) && reReview.findings.some((f: any) => ["critical", "high"].includes(String(f.severity || "").toLowerCase()));
      if (reReview.decision !== "approve" || reHighRisk || !validateGeneratedTests(reReview.testCases) || typeof reReview.testBundle !== "string" || reReview.testBundle.trim().length < 80) {
        await addEvent(id, "review_agent.repair_rejected", { attempt: repairAttempt, decision: reReview.decision || "invalid", findings: reReview.findings || [], message: "Agent 2 rejected or could not validate repaired changes; publication remains blocked." }, "agent");
