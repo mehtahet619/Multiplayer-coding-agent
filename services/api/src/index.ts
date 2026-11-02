@@ -582,11 +582,8 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      verifiedBundle = reTestPlan.testBundle;
      await addEvent(id, "review_agent.repair_approved", { attempt: repairAttempt, testCaseCount: verifiedCases.length, message: "Agent 2 separately re-audited the repair and generated a fresh test suite." }, "agent");
      const finalAuditedRef = await github("/repos/" + owner + "/" + name + "/git/ref/heads/" + encodeURIComponent(branch), credentials.githubToken);
-     const finalAuditedSha = String(finalAuditedRef.object?.sha || "");
-     if (!finalAuditedSha) throw new Error("Could not resolve final audited repair commit SHA.");
-     verifiedCases = reReview.testCases as GeneratedTestCase[];
-     verifiedBundle = reReview.testBundle;
-     await addEvent(id, "review_agent.repair_approved", { attempt: repairAttempt, testCaseCount: verifiedCases.length, message: "Agent 2 re-reviewed the repaired diff and generated a fresh test suite." }, "agent");
+     verifiedCandidateSha = String(finalAuditedRef.object?.sha || "");
+     if (!verifiedCandidateSha) throw new Error("Could not resolve final audited repair commit SHA.");
      verification = await executeIsolatedVerification({
        repository: repo, workflowRef: base, baseSha: String(baseRef.object?.sha || ""), candidateSha: verifiedCandidateSha, task,
        testCases: verifiedCases, testBundle: verifiedBundle, githubToken: credentials.githubToken
