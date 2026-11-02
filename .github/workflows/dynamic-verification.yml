@@ -52,30 +52,24 @@ jobs:
           elif [ -f yarn.lock ]; then corepack enable && yarn install --immutable
           elif [ -f package.json ]; then npm install --ignore-scripts
           else echo "No supported Node package manifest; cannot verify." >&2; exit 1; fi
-      - name: Write generated test inputs
+      - name: Prepare generated test bundle
         env:
           TEST_CASES_JSON: ${{ inputs.test_cases }}
           TEST_BUNDLE_SOURCE: ${{ inputs.test_bundle }}
+        shell: bash
         run: |
+          set -euo pipefail
           node <<'NODE'
           const fs = require('node:fs');
-          fs.writeFileSync('.agent-test-cases.json', process.env.TEST_CASES_JSON, { mode: 0o600 });
+          const cases = JSON.parse(process.env.TEST_CASES_JSON);
+          if (!Array.isArray(cases) || cases.length < 20 || cases.length > 30) throw new Error('Expected 20–30 generated test cases');
+          fs.writeFileSync('.agent-test-cases.json', JSON.stringify(cases), { mode: 0o600 });
           fs.writeFileSync('.agent-generated-tests.cjs', process.env.TEST_BUNDLE_SOURCE, { mode: 0o600 });
-          JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8'));
-          NODE
-      - name: Execute generated tests
-        id: run_tests
-        continue-on-error: true
-        env:
-          RUN_ID: ${{ inputs.run_id }}
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-        run: |
-          node <<'NODE'
+          fs.writeFileSync('.agent-runner-wrapper.cjs', `
           const fs = require('node:fs');
-          const path = require('node:path');
           (async () => {
             const cases = JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8'));
-            const mod = require(path.resolve('.agent-generated-tests.cjs'));
+            const mod = require('./.agent-generated-tests.cjs');
             const fn = typeof mod === 'function' ? mod : mod.runTests;
             if (typeof fn !== 'function') throw new Error('Generated harness must export a function or runTests');
             const raw = await fn({ repositoryRoot: process.cwd(), testCases: cases });
@@ -91,38 +85,70 @@ jobs:
               seen.add(item.id);
               results.push({ id: item.id, passed: item.passed, message: item.message.slice(0, 2000) });
             }
-            if (seen.size !== expected.size) throw new Error('Harness omitted one or more generated test IDs');
+            if (seen.size !== expected.size) throw new Error('Harness omitted generated test IDs');
             const failed = results.filter(x => !x.passed);
-            const report = {
-              runId: process.env.RUN_ID,
-              candidateSha: process.env.CANDIDATE_SHA,
-              executed: true,
-              status: failed.length ? 'failed' : 'passed',
-              testCount: results.length,
-              passedCount: results.length - failed.length,
-              failedCount: failed.length,
-              failures: failed.slice(0, 15).map(x => ({ id: x.id, passed: false, message: x.message.slice(0, 1000) })),
-              summary: failed.length ? failed.length + ' generated tests failed.' : 'All ' + results.length + ' generated tests passed.'
-            };
-            fs.writeFileSync('.agent-verification-report.json', JSON.stringify(report), { mode: 0o600 });
-            console.log(JSON.stringify(report));
+            process.stdout.write(JSON.stringify({ results, testCount: results.length, passedCount: results.length - failed.length, failedCount: failed.length }) + '\\n');
             if (failed.length) process.exitCode = 1;
-          })().catch(error => {
-            const report = {
-              runId: process.env.RUN_ID,
-              candidateSha: process.env.CANDIDATE_SHA,
-              executed: false,
-              status: 'failed',
-              testCount: 0,
-              passedCount: 0,
-              failedCount: 1,
-              failures: [{ id: 'harness-execution', message: String(error && error.stack || error).slice(0, 4000) }],
-              summary: 'Generated test harness failed to execute.'
-            };
-            fs.writeFileSync('.agent-verification-report.json', JSON.stringify(report), { mode: 0o600 });
-            console.error(JSON.stringify(report));
-            process.exitCode = 1;
-          });
+          })().catch(error => { console.error(error && error.stack || String(error)); process.exitCode = 2; });
+          `, { mode: 0o600 });
+          NODE
+      - name: Install dependencies in disposable container
+        id: install
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull node:22-bookworm-slim
+          docker run --rm --network bridge --memory 2g --cpus 2 --pids-limit 256 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            -v "$PWD:/workspace:rw" -w /workspace node:22-bookworm-slim sh -lc '
+              if [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile --ignore-scripts;
+              elif [ -f package-lock.json ]; then npm ci --ignore-scripts;
+              elif [ -f yarn.lock ]; then corepack enable && yarn install --immutable --mode=skip-builds;
+              elif [ -f package.json ]; then npm install --ignore-scripts;
+              else echo "No supported package manifest; generated static/API tests may still run."; fi
+            '
+      - name: Execute Agent 2 tests in network-isolated container
+        id: run_tests
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          set +e
+          docker run --rm --network none --memory 2g --cpus 2 --pids-limit 256 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges --user 65532:65532 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+            -v "$PWD:/workspace:ro" -w /workspace node:22-bookworm-slim \
+            node .agent-runner-wrapper.cjs > /tmp/agent2-results.json
+          TEST_EXIT=$?
+          set -e
+          TEST_EXIT_CODE="$TEST_EXIT" node <<'NODE'
+          const fs = require('node:fs');
+          const cases = JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8'));
+          let raw;
+          try { raw = JSON.parse(fs.readFileSync('/tmp/agent2-results.json', 'utf8')); } catch { raw = null; }
+          const valid = raw && Array.isArray(raw.results) &&
+            raw.testCount === cases.length && raw.results.length === cases.length &&
+            raw.results.every(x => x && typeof x.id === 'string' && typeof x.passed === 'boolean' && typeof x.message === 'string') &&
+            new Set(raw.results.map(x => x.id)).size === cases.length &&
+            cases.every(c => raw.results.some(x => x.id === c.id));
+          const results = valid ? raw.results : [];
+          const failed = results.filter(x => !x.passed);
+          const report = {
+            runId: process.env.RUN_ID, candidateSha: process.env.CANDIDATE_SHA,
+            executed: Boolean(valid), status: valid && failed.length === 0 && process.env.TEST_EXIT_CODE === '0' ? 'passed' : 'failed',
+            testCount: cases.length, passedCount: results.filter(x => x.passed).length,
+            failedCount: valid ? failed.length : cases.length,
+            failures: valid ? failed.slice(0, 25).map(x => ({id:x.id,message:x.message.slice(0,1000)})) : [{id:'sandbox-execution',message:'Sandbox failed or returned an invalid/mismatched report.'}],
+            summary: valid ? (failed.length ? failed.length + ' generated tests failed.' : 'All ' + cases.length + ' generated tests passed.') : 'Isolated execution did not produce a valid report.'
+          };
+          fs.writeFileSync('.agent-verification-report.json', JSON.stringify(report), { mode: 0o600 });
+          console.log(JSON.stringify(report));
+          if (report.status !== 'passed') process.exitCode = 1;
           NODE
       - name: Publish verification check
         if: always()
