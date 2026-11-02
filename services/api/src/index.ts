@@ -164,6 +164,39 @@ async function github(path: string, token: string, init: RequestInit = {}) {
  return data as any;
 }
 
+
+function configuredContextTokenLimit(): number {
+ const raw = Number(process.env.AGENT_CONTEXT_MAX_TOKENS);
+ return Number.isFinite(raw) && raw > 0 ? Math.max(4000, Math.min(80000, Math.floor(raw))) : 60000;
+}
+function estimateTokens(text: string): number { return Math.ceil(text.length / 4); }
+const IGNORED_PATH = /(^|\/)(node_modules|\.git|\.next|\.nuxt|\.output|coverage|dist|build|out|vendor|target|\.venv|venv|__pycache__|\.turbo|\.cache)(\/|$)/i;
+const IGNORED_FILE = /(^|\.)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|npm-shrinkwrap\.json|composer\.lock|Cargo\.lock|Gemfile\.lock|poetry\.lock|Pipfile\.lock|go\.sum|\.min\.(js|css)|\.map|\.snap|\.lock)$/i;
+const TEXT_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".json",".md",".mdx",".txt",".html",".css",".scss",".sass",".less",".py",".go",".rs",".java",".kt",".kts",".cs",".fs",".rb",".php",".vue",".svelte",".astro",".sql",".prisma",".graphql",".gql",".yml",".yaml",".toml",".ini",".cfg",".conf",".sh",".bash",".ps1",".bat",".dockerfile",".xml",".svg",".env.example"]);
+function isUsefulTextFile(path: string): boolean {
+ const lower = path.toLowerCase();
+ if (IGNORED_PATH.test(lower) || IGNORED_FILE.test(lower)) return false;
+ if (/\.(png|jpe?g|gif|webp|ico|bmp|tiff?|pdf|zip|gz|7z|rar|tar|exe|dll|so|dylib|bin|wasm|mp[34]|mov|mp4|woff2?|ttf|otf|eot|class|jar|pyc|pyo|db|sqlite)$/i.test(lower)) return false;
+ const name = lower.split("/").pop() || lower;
+ if (name === "dockerfile" || name === "makefile" || name === ".gitignore" || name === ".npmrc" || name === ".nvmrc") return true;
+ const dot = name.lastIndexOf(".");
+ return dot >= 0 && TEXT_EXTENSIONS.has(name.slice(dot));
+}
+function relevanceScore(path: string, task: string): number {
+ const terms = [...new Set((task.toLowerCase().match(/[a-z0-9_./-]{3,}/g) || []).filter(x => !["the","and","for","with","that","this","from","into","make","please","should","would","could","user","agent"].includes(x)))];
+ const p = path.toLowerCase();
+ let score = 0;
+ for (const term of terms) {
+   if (p.includes(term)) score += Math.min(12, term.length + 2);
+   const parts = term.split(/[./_-]/).filter(x => x.length > 2);
+   for (const part of parts) if (p.includes(part)) score += 3;
+ }
+ if (/(src|app|pages|components|services|api|lib)\//i.test(path)) score += 5;
+ if (/(readme|package\.json|tsconfig|vite\.config|next\.config|\.env\.example)$/i.test(path)) score += 2;
+ if (/(test|spec)\.[^.]+$/i.test(path)) score += 1;
+ return score;
+}
+
 function configuredTokenLimit(name: string, fallback = 8192): number {
  const raw = Number(process.env[name]);
  if (!Number.isFinite(raw) || raw <= 0) return fallback;
@@ -210,27 +243,46 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    const repoInfo = await github("/repos/" + owner + "/" + name, credentials.githubToken);
    const base = session.baseBranch || repoInfo.default_branch || "main";
    const tree = await github("/repos/" + owner + "/" + name + "/git/trees/" + encodeURIComponent(base) + "?recursive=1", credentials.githubToken);
+   if (tree.truncated) throw new Error("GitHub truncated the repository file tree. Narrow the session repository path or split the task into smaller modules.");
    const pathPrefix = session.repositoryPath ? session.repositoryPath.replace(/^\/+|\/+$/g, "") + "/" : "";
-   const files = (tree.tree || []).filter((x: any) => x.type === "blob" && (!pathPrefix || String(x.path).startsWith(pathPrefix)) && /\.(ts|tsx|js|jsx|json|md|css|html|py|go|rs|yml|yaml)$/.test(x.path) && !/(node_modules|dist|build|\.lock$|\.min\.)/.test(x.path)).slice(0, 100);
-   const maxContextChars = Math.max(20000, Math.min(500000, Number(process.env.AGENT_CONTEXT_MAX_CHARS) || 120000));
-   const contents: Array<{path:string;sha:string;content:string}> = [];
-   let contextChars = 0;
-   let omittedContextFiles = 0;
-   for (const file of files) {
-     if (cancelled.has(id)) throw new Error("Task cancelled.");
-     if (paused.has(id)) { await waitWhilePaused(id); }
-     const blob = await github("/repos/" + owner + "/" + name + "/contents/" + file.path.split("/").map(encodeURIComponent).join("/") + "?ref=" + encodeURIComponent(base), credentials.githubToken);
-     if (blob.encoding === "base64" && typeof blob.content === "string") {
-       const decoded = Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
-       if (decoded.length < 30000 && contextChars + decoded.length <= maxContextChars) {
-         contents.push({ path: file.path, sha: blob.sha, content: decoded });
-         contextChars += decoded.length;
-       } else omittedContextFiles++;
-     }
-   }
    const task = (instructions.get(id) || []).join("\n\n");
-   const prompt = "You are a careful coding agent. Review the supplied repository files and implement the user's task. Return ONLY JSON matching {summary:string, edits:[{path:string,content:string}], notes:string[]}. Each edit must contain the COMPLETE replacement file content. Only edit existing files included in the input; never edit secrets, CI deployment config, package lockfiles, or files outside the task scope. If the task cannot be safely completed from the provided files, return edits:[] and explain in summary/notes. Keep edits focused.\nTASK:\n" + task + "\nFILES:\n" + JSON.stringify(contents.map(f => ({path:f.path,content:f.content})));
-   await addEvent(id, "agent.analyzing", { fileCount: contents.length, omittedContextFiles, contextChars, maxContextChars, message: "Sending bounded repository context to the model." }, "agent");
+   const allPaths = (tree.tree || []).filter((x: any) => x.type === "blob" && (!pathPrefix || String(x.path).startsWith(pathPrefix))).map((x: any) => String(x.path));
+   const eligible = allPaths.filter(isUsefulTextFile);
+   const ranked = eligible.map((path: string) => ({ path, score: relevanceScore(path, task) }))
+     .sort((a: any, b: any) => b.score - a.score || a.path.localeCompare(b.path));
+   const maxContextTokens = configuredContextTokenLimit();
+   const maxContextChars = maxContextTokens * 4;
+   const treeBudgetChars = Math.min(12000, Math.floor(maxContextChars * 0.08));
+   const treeText = allPaths.slice(0, 1200).map((path: string) => path).join("\n");
+   const boundedTree = treeText.length > treeBudgetChars ? treeText.slice(0, treeBudgetChars) + "\n... file tree truncated ..." : treeText;
+   const contents: Array<{path:string;sha:string;content:string}> = [];
+   const selected = ranked.slice(0, Math.min(160, ranked.length));
+   let contextChars = boundedTree.length + task.length + 12000;
+   let omittedContextFiles = Math.max(0, eligible.length - selected.length);
+   let skippedByBudget = 0;
+   for (const file of selected) {
+     if (cancelled.has(id)) throw new Error("Task cancelled.");
+     if (paused.has(id)) await waitWhilePaused(id);
+     const remainingChars = maxContextChars - contextChars;
+     if (remainingChars < 1500) { skippedByBudget += selected.length - contents.length - skippedByBudget; break; }
+     const blob = await github("/repos/" + owner + "/" + name + "/contents/" + file.path.split("/").map(encodeURIComponent).join("/") + "?ref=" + encodeURIComponent(base), credentials.githubToken);
+     if (blob.encoding !== "base64" || typeof blob.content !== "string") { omittedContextFiles++; continue; }
+     const decoded = Buffer.from(blob.content.replace(/\n/g, ""), "base64").toString("utf8");
+     if (decoded.includes("\u0000")) { omittedContextFiles++; continue; }
+     const contentBudget = Math.min(remainingChars - 1000, 80000);
+     if (decoded.length > contentBudget) { skippedByBudget++; continue; }
+     contents.push({ path: file.path, sha: blob.sha, content: decoded });
+     contextChars += decoded.length;
+   }
+   const serializedFiles = JSON.stringify(contents.map(f => ({path:f.path,content:f.content})));
+   const prompt = "You are a careful coding agent. Review the repository file tree and selected relevant source files, then implement the user's task. Return ONLY JSON matching {summary:string, edits:[{path:string,content:string}], notes:string[]}. Each edit must contain the COMPLETE replacement file content. Only edit existing files included in SELECTED FILES; never edit secrets, CI deployment config, package lockfiles, or files outside the task scope. The file tree is for navigation only. If a needed file was not selected, explain this rather than inventing its contents. Keep edits focused.\nTASK:\n" + task + "\nREPOSITORY FILE TREE (paths only):\n" + boundedTree + "\nSELECTED FILES (highest keyword relevance first):\n" + serializedFiles;
+   const estimatedPromptTokens = estimateTokens(prompt);
+   if (estimatedPromptTokens > maxContextTokens) throw new Error("Prompt context budget exceeded before model request (" + estimatedPromptTokens + " estimated tokens > " + maxContextTokens + "). Reduce AGENT_CONTEXT_MAX_TOKENS or narrow the repository path.");
+   await addEvent(id, "agent.analyzing", {
+     fileCount: contents.length, eligibleFileCount: eligible.length, omittedContextFiles, skippedByBudget,
+     contextChars, estimatedPromptTokens, maxContextTokens,
+     message: "Repository context selected by task relevance. " + omittedContextFiles + " unsupported/binary/generated files and " + skippedByBudget + " lower-priority files were skipped; estimated prompt " + estimatedPromptTokens + "/" + maxContextTokens + " tokens."
+   }, "agent");
    const model = credentials.model || ({ openai: "gpt-4.1-mini", anthropic: "claude-sonnet-4-20250514", gemini: "gemini-2.5-flash", openrouter: "openai/gpt-4.1-mini" } as Record<string,string>)[credentials.provider];
    let outputText = "";
    let outputTruncated = false;
