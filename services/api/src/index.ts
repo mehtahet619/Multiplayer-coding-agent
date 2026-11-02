@@ -342,9 +342,10 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    ].join("\n") + "\nORIGINAL TASK:\n" + task + "\nPROPOSED EDITS:\n" + JSON.stringify(edits.map((e: any) => ({ path: e.path, content: e.content }))) + "\nORIGINAL FILES:\n" + JSON.stringify(contents.map(f => ({ path: f.path, content: f.content })));
    const buildReviewPromptText = () => buildReviewPrompt();
    let reviewPrompt = buildReviewPromptText();
+   if (estimateTokens(reviewPrompt) > configuredContextTokenLimit()) throw new Error("Agent 2 review context exceeds AGENT_CONTEXT_MAX_TOKENS. Narrow the repository path or reduce the task scope; the complete diff will not be truncated for review.");
    let review = await requestProviderJson(reviewerCredentials.provider, reviewerCredentials.providerKey, reviewerModelResolved, reviewPrompt, "Agent 2 requirement auditor and test engineer", "AGENT2_MAX_OUTPUT_TOKENS");
    const maxAuditRepairAttempts = Math.max(1, Math.min(6, Number(process.env.AGENT_MAX_AUDIT_REPAIR_ITERATIONS || 3)));
-   for (let auditAttempt = 1; review.decision !== "approve" && auditAttempt <= maxAuditRepairAttempts; auditAttempt++) {
+   for (let auditAttempt = 1; (review.decision !== "approve" || (Array.isArray(review.findings) && review.findings.some((x: any) => ["critical", "high"].includes(String(x.severity || "").toLowerCase())))) && auditAttempt <= maxAuditRepairAttempts; auditAttempt++) {
      const findings = Array.isArray(review.findings) ? review.findings : [];
      const requiredFixes = Array.isArray(review.requiredFixes) ? review.requiredFixes.filter((x: any) => typeof x === "string" && x.trim()) : [];
      const highRiskFindings = findings.filter((x: any) => ["critical", "high"].includes(String(x.severity || "").toLowerCase()));
@@ -364,6 +365,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
        "YOUR CURRENT PROPOSED EDITS:\n" + JSON.stringify(edits),
        "ORIGINAL FILES:\n" + JSON.stringify(contents.map(f => ({path:f.path,content:f.content})))
      ].join("\n\n");
+     if (estimateTokens(auditRepairPrompt) > configuredContextTokenLimit()) throw new Error("Agent 1 audit-repair context exceeds AGENT_CONTEXT_MAX_TOKENS. Narrow the repository path or split the task.");
      const repaired = await requestProviderJson(credentials.provider, credentials.providerKey, model, auditRepairPrompt, "Agent 1 requirement-audit repair", "AGENT1_REPAIR_MAX_OUTPUT_TOKENS");
      const repairEdits = Array.isArray(repaired.edits)
        ? repaired.edits.filter((e: any) => e && typeof e.path === "string" && typeof e.content === "string" && contents.some(f => f.path === e.path))
@@ -379,6 +381,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      }
      await addEvent(id, "agent.audit_repair_proposed", { attempt: auditAttempt, files: repairEdits.map((e: any) => e.path), summary: String(repaired.summary || "Agent 1 updated the implementation against audit evidence.") }, "agent");
      reviewPrompt = buildReviewPromptText();
+     if (estimateTokens(reviewPrompt) > configuredContextTokenLimit()) throw new Error("Agent 2 re-audit context exceeds AGENT_CONTEXT_MAX_TOKENS. The complete proposed diff will not be truncated.");
      review = await requestProviderJson(reviewerCredentials.provider, reviewerCredentials.providerKey, reviewerModelResolved, reviewPrompt, "Agent 2 independent requirement re-auditor", "AGENT2_MAX_OUTPUT_TOKENS");
      await addEvent(id, "review_agent.audit_rechecked", {
        attempt: auditAttempt, decision: review.decision || "invalid",
