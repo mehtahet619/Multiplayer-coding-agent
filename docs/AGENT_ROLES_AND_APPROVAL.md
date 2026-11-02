@@ -25,7 +25,7 @@ The Requirement Auditor and Test Engineer are separate model requests. The Test 
 6. Only after the audit passes does Agent 2 generate tests.
 7. The test suite runs on the exact candidate commit in a disposable Docker container on a GitHub-hosted runner. Dependency installation occurs in a separate resource-limited container with network access and package lifecycle scripts disabled. The actual generated test harness runs with **no network**, a read-only repository mount, no credentials, no Linux capabilities, a non-root user, and CPU/memory/process limits.
 8. If tests fail, Agent 2 reports the actual failed test IDs and evidence to Agent 1. Agent 1 repairs; Agent 2 re-audits and creates a fresh test suite. The execution/repair loop runs up to `AGENT_MAX_REPAIR_ITERATIONS` (default 5, bounded 1–8).
-9. Only a fully audited candidate with a complete passing execution report and successful repository CI is committed to a separate branch and opened as a pull request. Neither agent merges to the default branch.
+9. After the requirement audit passes, the candidate is committed to a separate feature branch so the exact commit can be tested. A pull request is opened only after the generated suite passes and repository CI succeeds. Neither agent merges to the default branch.
 
 ## Failure behavior
 
