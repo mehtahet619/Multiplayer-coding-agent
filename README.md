@@ -46,7 +46,7 @@ The API uses bounded defaults to avoid unexpectedly large model requests. Config
 - `AGENT1_MAX_OUTPUT_TOKENS`: Agent 1 initial implementation response, default 8192.
 - `AGENT1_REPAIR_MAX_OUTPUT_TOKENS`: Agent 1 repair response, default 8192.
 - `AGENT2_MAX_OUTPUT_TOKENS`: Agent 2 review and re-review responses, default 8192.
-- `AGENT_CONTEXT_MAX_CHARS`: maximum repository source context sent per run, default 120000 characters (bounded to 20000–500000).
+- `AGENT_CONTEXT_MAX_TOKENS`: maximum estimated prompt context, default 60000 tokens (bounded to 4000–80000). Estimation uses approximately 4 characters per token. The API sends the repository tree plus task-relevant text files ranked by keyword relevance, and skips binary, generated, dependency, build, and lock files. Lower-priority files are dropped when the budget is reached; the activity log reports selected/skipped counts and estimated prompt tokens.\n- `AGENT1_MAX_OUTPUT_TOKENS`, `AGENT1_REPAIR_MAX_OUTPUT_TOKENS`, and `AGENT2_MAX_OUTPUT_TOKENS` cap model output requests (default 8192 each, bounded to 1024–16384). Set these to a value supported by the selected provider/model and your available API credits.
 
 Output token limits are bounded to 1024–16384. If a provider reports that it stopped because the output limit was reached, the run fails with a clear truncation error instead of attempting to parse or publish incomplete JSON. Increase the relevant limit or reduce the task/context size when that happens.
 
