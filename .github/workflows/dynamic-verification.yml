@@ -142,7 +142,7 @@ jobs:
           const fs = require('node:fs');
           const cases = JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8'));
           let raw;
-          try { raw = JSON.parse(fs.readFileSync('/tmp/agent2-results.json', 'utf8')); } catch { raw = null; }
+          try { const lines = fs.readFileSync('/tmp/agent2-results.json', 'utf8').split(/\r?\n/).filter(Boolean); raw = JSON.parse(lines[lines.length - 1]); } catch { raw = null; }
           const valid = raw && Array.isArray(raw.results) &&
             raw.testCount === cases.length && raw.results.length === cases.length &&
             raw.results.every(x => x && typeof x.id === 'string' && typeof x.passed === 'boolean' && typeof x.message === 'string') &&
