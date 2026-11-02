@@ -36,7 +36,7 @@ The Compose file starts PostgreSQL only by default to keep local development str
 - Agent 1 generates complete-file edits from relevance-ranked repository context. No branch is created before review.
 - Agent 2 first audits the original task against every proposed change. If requirements are missing or critical/high findings exist, it sends failure evidence to Agent 1 for bounded repair and independently re-audits.
 - Only after the audit returns explicit acceptance criteria all marked met does a separate Agent 2 Test Engineer model call generate a fresh 20–30-case risk-based test matrix and executable test harness.
-- GitHub Actions checks out the exact candidate SHA. Dependencies install in a disposable resource-limited container with package lifecycle scripts disabled. The generated harness runs in a separate Docker container with no network, a read-only repository mount, no credentials, a non-root user, and CPU/memory/process limits.
+- GitHub Actions checks out the exact candidate SHA. Dependencies install in a disposable resource-limited container with package lifecycle scripts disabled. The generated harness runs in a separate Docker container with no network, a disposable repository copy, no credentials, a non-root user, and CPU/memory/process limits.
 - Actual test failures go back to Agent 1. Agent 2 re-audits every repair and creates a fresh suite before retesting. The candidate branch is created only after the requirement audit passes. Pull-request creation is blocked unless all generated tests and repository CI pass.
 - Configure `AGENT_MAX_AUDIT_REPAIR_ITERATIONS` (default 3) and `AGENT_MAX_REPAIR_ITERATIONS` (default 5) to control the bounded repair loops. See [Agent roles and approval](docs/AGENT_ROLES_AND_APPROVAL.md).
 
