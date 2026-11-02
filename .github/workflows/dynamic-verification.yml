@@ -59,17 +59,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p /tmp/agent-input
           node <<'NODE'
           const fs = require('node:fs');
           const cases = JSON.parse(process.env.TEST_CASES_JSON);
           if (!Array.isArray(cases) || cases.length < 20 || cases.length > 30) throw new Error('Expected 20–30 generated test cases');
-          fs.writeFileSync('.agent-test-cases.json', JSON.stringify(cases), { mode: 0o600 });
-          fs.writeFileSync('.agent-generated-tests.cjs', process.env.TEST_BUNDLE_SOURCE, { mode: 0o600 });
-          fs.writeFileSync('.agent-runner-wrapper.cjs', `
+          fs.writeFileSync('/tmp/agent-input/test-cases.json', JSON.stringify(cases), { mode: 0o644 });
+          fs.writeFileSync('.agent-generated-tests.cjs', process.env.TEST_BUNDLE_SOURCE, { mode: 0o644 });
+          fs.writeFileSync('/tmp/agent-input/agent-runner-wrapper.cjs', `
           const fs = require('node:fs');
+          const path = require('node:path');
           (async () => {
-            const cases = JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8'));
-            const mod = require('./.agent-generated-tests.cjs');
+            const cases = JSON.parse(fs.readFileSync('/agent-input/test-cases.json', 'utf8'));
+            const mod = require(path.join(process.cwd(), '.agent-generated-tests.cjs'));
             const fn = typeof mod === 'function' ? mod : mod.runTests;
             if (typeof fn !== 'function') throw new Error('Generated harness must export a function or runTests');
             const raw = await fn({ repositoryRoot: process.cwd(), testCases: cases });
@@ -79,9 +81,7 @@ jobs:
             const results = [];
             for (const item of raw) {
               if (!item || typeof item.id !== 'string' || !expected.has(item.id) || seen.has(item.id) ||
-                  typeof item.passed !== 'boolean' || typeof item.message !== 'string') {
-                throw new Error('Harness returned malformed, duplicate, or unexpected test results');
-              }
+                  typeof item.passed !== 'boolean' || typeof item.message !== 'string') throw new Error('Harness returned malformed, duplicate, or unexpected test results');
               seen.add(item.id);
               results.push({ id: item.id, passed: item.passed, message: item.message.slice(0, 2000) });
             }
@@ -91,18 +91,15 @@ jobs:
             if (failed.length) process.exitCode = 1;
           })().catch(error => {
             let cases = [];
-            try { cases = JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8')); } catch {}
+            try { cases = JSON.parse(fs.readFileSync('/agent-input/test-cases.json', 'utf8')); } catch {}
             const message = String(error && error.stack || error).slice(0, 2000);
             if (Array.isArray(cases) && cases.length) {
               const results = cases.map(test => ({ id: test.id, passed: false, message: 'Harness execution error: ' + message }));
               process.stdout.write(JSON.stringify({ results, testCount: results.length, passedCount: 0, failedCount: results.length }) + '\\n');
-            } else {
-              console.error(message);
-            }
+            } else console.error(message);
             process.exitCode = 1;
           });
-          `, { mode: 0o600 });
-          chmod 644 .agent-test-cases.json .agent-generated-tests.cjs .agent-runner-wrapper.cjs
+          `, { mode: 0o644 });
           NODE
       - name: Install dependencies in disposable container
         id: install
@@ -132,19 +129,20 @@ jobs:
           set -euo pipefail
           set +e
           docker run --rm --network none --memory 2g --cpus 2 --pids-limit 256 \
-            --read-only --cap-drop ALL --security-opt no-new-privileges --user 65532:65532 \
+            --read-only --cap-drop ALL --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
             --tmpfs /tmp:rw,noexec,nosuid,size=256m \
-            -v "$PWD:/workspace:ro" -w /workspace node:22-bookworm-slim \
-            node .agent-runner-wrapper.cjs > /tmp/agent2-results.json
+            -v "$PWD:/workspace:rw" -v "/tmp/agent-input:/agent-input:ro" -w /workspace \
+            -e HOME=/tmp -e npm_config_cache=/tmp/npm-cache -e COREPACK_HOME=/tmp/corepack \
+            node:22-bookworm-slim node /agent-input/agent-runner-wrapper.cjs > /tmp/agent2-results.json
           TEST_EXIT=$?
           set -e
           TEST_EXIT_CODE="$TEST_EXIT" node <<'NODE'
           const fs = require('node:fs');
-          const cases = JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8'));
+          const cases = JSON.parse(fs.readFileSync('/tmp/agent-input/test-cases.json', 'utf8'));
           let raw;
           try { const lines = fs.readFileSync('/tmp/agent2-results.json', 'utf8').split(/\r?\n/).filter(Boolean); raw = JSON.parse(lines[lines.length - 1]); } catch { raw = null; }
-          const valid = raw && Array.isArray(raw.results) &&
-            raw.testCount === cases.length && raw.results.length === cases.length &&
+          const valid = raw && Array.isArray(raw.results) && raw.testCount === cases.length &&
+            raw.results.length === cases.length &&
             raw.results.every(x => x && typeof x.id === 'string' && typeof x.passed === 'boolean' && typeof x.message === 'string') &&
             new Set(raw.results.map(x => x.id)).size === cases.length &&
             cases.every(c => raw.results.some(x => x.id === c.id));
