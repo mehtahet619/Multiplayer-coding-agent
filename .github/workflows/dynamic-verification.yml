@@ -89,7 +89,18 @@ jobs:
             const failed = results.filter(x => !x.passed);
             process.stdout.write(JSON.stringify({ results, testCount: results.length, passedCount: results.length - failed.length, failedCount: failed.length }) + '\\n');
             if (failed.length) process.exitCode = 1;
-          })().catch(error => { console.error(error && error.stack || String(error)); process.exitCode = 2; });
+          })().catch(error => {
+            let cases = [];
+            try { cases = JSON.parse(fs.readFileSync('.agent-test-cases.json', 'utf8')); } catch {}
+            const message = String(error && error.stack || error).slice(0, 2000);
+            if (Array.isArray(cases) && cases.length) {
+              const results = cases.map(test => ({ id: test.id, passed: false, message: 'Harness execution error: ' + message }));
+              process.stdout.write(JSON.stringify({ results, testCount: results.length, passedCount: 0, failedCount: results.length }) + '\\n');
+            } else {
+              console.error(message);
+            }
+            process.exitCode = 1;
+          });
           `, { mode: 0o600 });
           chmod 644 .agent-test-cases.json .agent-generated-tests.cjs .agent-runner-wrapper.cjs
           NODE
