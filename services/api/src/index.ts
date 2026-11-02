@@ -339,11 +339,11 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      "Approve only when every acceptance criterion is implemented completely and correctly and no critical/high finding remains. Never approve by default.",
      "If anything is missing, ambiguous, incorrect, or unsafe, return decision=reject, list each unmet criterion with concrete evidence in requiredFixes, and identify findings with severity, file, issue, and recommendation. Do not suggest a full implementation or write code.",
      "Return ONLY JSON with schema: {decision:'approve'|'reject',summary:string,acceptanceCriteria:[{criterion:string,status:'met'|'unmet',evidence:string}],findings:[{severity:'critical'|'high'|'medium'|'low',file:string,issue:string,recommendation:string}],requiredFixes:string[]}. No tests or testBundle fields in this stage."
-   ].join("\\n") + "\\nORIGINAL TASK:\\n" + task + "\\nPROPOSED EDITS:\\n" + JSON.stringify(edits.map((e: any) => ({ path: e.path, content: e.content }))) + "\\nORIGINAL FILES:\\n" + JSON.stringify(contents.map(f => ({ path: f.path, content: f.content })));
+   ].join("\n") + "\nORIGINAL TASK:\n" + task + "\nPROPOSED EDITS:\n" + JSON.stringify(edits.map((e: any) => ({ path: e.path, content: e.content }))) + "\nORIGINAL FILES:\n" + JSON.stringify(contents.map(f => ({ path: f.path, content: f.content })));
    const buildReviewPromptText = () => buildReviewPrompt();
    let reviewPrompt = buildReviewPromptText();
    if (estimateTokens(reviewPrompt) > configuredContextTokenLimit()) throw new Error("Agent 2 review context exceeds AGENT_CONTEXT_MAX_TOKENS. Narrow the repository path or reduce the task scope; the complete diff will not be truncated for review.");
-   let review = await requestProviderJson(reviewerCredentials.provider, reviewerCredentials.providerKey, reviewerModelResolved, reviewPrompt, "Agent 2 requirement auditor and test engineer", "AGENT2_MAX_OUTPUT_TOKENS");
+   let review = await requestProviderJson(reviewerCredentials.provider, reviewerCredentials.providerKey, reviewerModelResolved, reviewPrompt, "Agent 2 Requirement Auditor", "AGENT2_MAX_OUTPUT_TOKENS");
    const maxAuditRepairAttempts = Math.max(1, Math.min(6, Number(process.env.AGENT_MAX_AUDIT_REPAIR_ITERATIONS || 3)));
    for (let auditAttempt = 1; (review.decision !== "approve" || (Array.isArray(review.findings) && review.findings.some((x: any) => ["critical", "high"].includes(String(x.severity || "").toLowerCase())))) && auditAttempt <= maxAuditRepairAttempts; auditAttempt++) {
      const findings = Array.isArray(review.findings) ? review.findings : [];
@@ -382,7 +382,7 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
      await addEvent(id, "agent.audit_repair_proposed", { attempt: auditAttempt, files: repairEdits.map((e: any) => e.path), summary: String(repaired.summary || "Agent 1 updated the implementation against audit evidence.") }, "agent");
      reviewPrompt = buildReviewPromptText();
      if (estimateTokens(reviewPrompt) > configuredContextTokenLimit()) throw new Error("Agent 2 re-audit context exceeds AGENT_CONTEXT_MAX_TOKENS. The complete proposed diff will not be truncated.");
-     review = await requestProviderJson(reviewerCredentials.provider, reviewerCredentials.providerKey, reviewerModelResolved, reviewPrompt, "Agent 2 independent requirement re-auditor", "AGENT2_MAX_OUTPUT_TOKENS");
+     review = await requestProviderJson(reviewerCredentials.provider, reviewerCredentials.providerKey, reviewerModelResolved, reviewPrompt, "Agent 2 Requirement Auditor re-audit", "AGENT2_MAX_OUTPUT_TOKENS");
      await addEvent(id, "review_agent.audit_rechecked", {
        attempt: auditAttempt, decision: review.decision || "invalid",
        summary: String(review.summary || "Agent 2 rechecked the revised implementation."),
@@ -392,7 +392,8 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    }
    const auditHighRisk = Array.isArray(review.findings) && review.findings.some((finding: any) => ["critical", "high"].includes(String(finding.severity || "").toLowerCase()));
    let testPlan: any = {};
-   if (review.decision === "approve" && !auditHighRisk) {
+   const auditComplete = review.decision === "approve" && Array.isArray(review.acceptanceCriteria) && review.acceptanceCriteria.length > 0 && review.acceptanceCriteria.every((criterion: any) => criterion && typeof criterion.criterion === "string" && criterion.criterion.trim() && criterion.status === "met" && typeof criterion.evidence === "string" && criterion.evidence.trim());
+   if (auditComplete && !auditHighRisk) {
      await addEvent(id, "review_agent.test_generation_started", { message: "Requirement audit passed. Agent 2 Test Engineer is now creating an independent risk-based test suite." }, "agent");
      const testPrompt = [
        "You are Agent 2 Test Engineer. The separate Requirement Auditor has approved the implementation. Your job is ONLY to design and implement a fresh executable test suite; do not rewrite the audit decision.",
@@ -401,12 +402,12 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
        "Also return testBundle as CommonJS source exporting async function({repositoryRoot,testCases}) or {runTests}. It must execute real assertions against the checked-out candidate repository, not return hard-coded success. Include the relevant repository test/build commands when available and behavior-specific assertions grounded in the supplied files. Return exactly one {id,passed,message} result per supplied test case. Do not claim tests ran.",
        "The test bundle will execute inside a Docker container with network disabled, read-only repository, no credentials, non-root user, and resource limits. Do not require network services, secrets, browser downloads, or privileged access. For UI-only behavior, use static/source-level assertions unless the repository already contains a runnable browser test setup.",
        "Return ONLY JSON: {summary:string,testCases:[{id:string,area:string,scenario:string,expectedResult:string,executionLayer:'ui'|'api'|'integration'|'static'}],testBundle:string}. Do not include markdown fences.",
-       "ORIGINAL TASK:\\n" + task,
-       "APPROVED ACCEPTANCE CRITERIA:\\n" + JSON.stringify(review.acceptanceCriteria || []),
-       "AUDIT FINDINGS (must not include critical/high blockers):\\n" + JSON.stringify(review.findings || []),
-       "PROPOSED IMPLEMENTATION:\\n" + JSON.stringify(edits),
-       "ORIGINAL REPOSITORY FILES:\\n" + JSON.stringify(contents.map(f => ({path:f.path,content:f.content})))
-     ].join("\\n\\n");
+       "ORIGINAL TASK:\n" + task,
+       "APPROVED ACCEPTANCE CRITERIA:\n" + JSON.stringify(review.acceptanceCriteria || []),
+       "AUDIT FINDINGS (must not include critical/high blockers):\n" + JSON.stringify(review.findings || []),
+       "PROPOSED IMPLEMENTATION:\n" + JSON.stringify(edits),
+       "ORIGINAL REPOSITORY FILES:\n" + JSON.stringify(contents.map(f => ({path:f.path,content:f.content})))
+     ].join("\n\n");
      if (estimateTokens(testPrompt) > configuredContextTokenLimit()) throw new Error("Agent 2 test-generation context exceeds AGENT_CONTEXT_MAX_TOKENS. Narrow the repository path or split the task.");
      testPlan = await requestProviderJson(reviewerCredentials.provider, reviewerCredentials.providerKey, reviewerModelResolved, testPrompt, "Agent 2 Test Engineer", "AGENT2_MAX_OUTPUT_TOKENS");
      review.testCases = Array.isArray(testPlan.testCases) ? testPlan.testCases : [];
@@ -425,10 +426,11 @@ async function runAgent(session: Session, credentials: AgentCredentials) {
    const testIds = testCases.map((test: any) => typeof test?.id === "string" ? test.id.trim() : "");
    const uniqueTestIds = testIds.every((testId: string) => testId.length > 0) && new Set(testIds).size === testCases.length;
    const completeTestCases = testCases.every((test: any) => test && typeof test.area === "string" && typeof test.scenario === "string" && test.scenario.trim().length > 0 && typeof test.expectedResult === "string" && test.expectedResult.trim().length > 0 && ["ui", "api", "integration", "static"].includes(test.executionLayer));
-   const validDecision = review.decision === "approve" && !highRisk && validateGeneratedTests(testCases) && uniqueTestIds && completeTestCases && testBundle.trim().length >= 80;
+   const validDecision = auditComplete && review.decision === "approve" && !highRisk && validateGeneratedTests(testCases) && uniqueTestIds && completeTestCases && testBundle.trim().length >= 80;
    await addEvent(id, "review_agent.completed", {
      decision: validDecision ? "approved" : "rejected",
      summary: String(review.summary || "Permission review completed."),
+     acceptanceCriteria: Array.isArray(review.acceptanceCriteria) ? review.acceptanceCriteria : [],
      findings: Array.isArray(review.findings) ? review.findings : [],
      testCaseCount: testCases.length,
      testCases,
