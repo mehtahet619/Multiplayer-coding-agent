@@ -8,12 +8,12 @@ Agent 1 uses the selected coding provider (OpenAI, Anthropic, Gemini, or OpenRou
 
 ## Agent 2: independent requirement auditor and test engineer
 
-Agent 2 uses its own provider, API key, and model selection. It has two ordered responsibilities:
+Agent 2 uses its own provider, API key, and model selection. It runs two separate model calls in order:
 
 1. **Requirement Auditor:** translate the original request into explicit acceptance criteria, inspect every proposed edit against the criteria and original source, and check security, authorization, data exposure, injection, dependency/configuration risk, regressions, correctness, accessibility, UI states, API behavior, and error handling.
 2. **Test Engineer:** only after the Requirement Auditor approves every criterion, create a fresh 20–30-case risk-based test matrix and an executable CommonJS test harness. Cases must cover the applicable acceptance criteria, positive and negative behavior, authorization, security, regressions, edge cases, and failure/recovery paths.
 
-A generated test plan is not evidence that tests passed. Agent 2 must return one result for every generated test ID. Missing, duplicate, malformed, or failed results block publication.
+The Requirement Auditor and Test Engineer are separate model requests. The Test Engineer is never called unless the audit has returned explicit, complete acceptance criteria marked met and no critical/high finding. A generated test plan is not evidence that tests passed. Agent 2 must return one result for every generated test ID. Missing, duplicate, malformed, or failed results block publication.
 
 ## Autonomous audit and repair loop
 
